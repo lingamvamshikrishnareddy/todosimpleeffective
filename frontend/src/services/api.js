@@ -358,17 +358,17 @@ class AuthAPI {
     }
     
     async register(userData) {
-      try {
-        console.log('Attempting to register user at:', `${apiClient.defaults.baseURL}/api/users`);
-        console.log('User data:', userData);
-        const response = await apiClient.post('/api/users', userData);
-        console.log('Registration response:', response);
-        return response;
-      } catch (error) {
-        console.error('Registration error:', error.response ? error.response.data : error.message);
-        throw error;
-      }
-    }
+  try {
+    console.log('Attempting to register user at:', `${apiClient.defaults.baseURL}/users`);
+    console.log('User data:', userData);
+    const response = await apiClient.post('/users', userData);
+    console.log('Registration response:', response);
+    return response;
+  } catch (error) {
+    console.error('Registration error:', error.response ? error.response.data : error.message);
+    throw error;
+  }
+}
     
     async logout() {
       try {
