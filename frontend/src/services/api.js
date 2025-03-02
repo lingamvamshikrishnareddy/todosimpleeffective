@@ -361,11 +361,17 @@ class AuthAPI {
   try {
     console.log('Attempting to register user at:', `${apiClient.defaults.baseURL}/users`);
     console.log('User data:', userData);
+    // Make sure this path matches exactly what your backend expects
     const response = await apiClient.post('/users', userData);
     console.log('Registration response:', response);
     return response;
   } catch (error) {
-    console.error('Registration error:', error.response ? error.response.data : error.message);
+    console.error('Registration error details:', {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      message: error.message
+    });
     throw error;
   }
 }
