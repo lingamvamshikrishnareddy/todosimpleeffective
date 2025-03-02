@@ -20,18 +20,31 @@ app.use(express.json());
 app.use('/api/tasks', taskRoutes);
 app.use('/api', userRoutes);
 
-// Serve static assets if in production
-if (process.env.NODE_ENV === 'production') {
-  // Set static folder
-  app.use(express.static('client/build'));
+// Define the correct client build path for Render deployment
+const clientBuildPath = process.env.NODE_ENV === 'production' 
+  ? path.join(__dirname, '../client/build')  // Adjust this path based on your project structure
+  : path.join(__dirname, 'client/build');
 
+// Check if the client build path exists
+const fs = require('fs');
+if (fs.existsSync(clientBuildPath)) {
+  // Serve static files from the client build folder
+  app.use(express.static(clientBuildPath));
+
+  // For any other routes, serve the index.html file
   app.get('*', (req, res) => {
-    res.sendFile(path.resolve(__dirname, 'client', 'build', 'index.html'));
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
   });
 } else {
-  // Basic route for development
+  // If client build doesn't exist, serve a simple API message
   app.get('/', (req, res) => {
-    res.send('API is running...');
+    res.json({ 
+      message: 'API is running', 
+      endpoints: {
+        tasks: '/api/tasks',
+        users: '/api'
+      }
+    });
   });
 }
 
@@ -42,4 +55,6 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+  console.log(`Client build path: ${clientBuildPath}`);
+  console.log(`Client build exists: ${fs.existsSync(clientBuildPath)}`);
 });
