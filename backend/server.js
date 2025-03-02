@@ -13,6 +13,7 @@ connectDB();
 const app = express();
 
 // Enhanced CORS configuration
+// Enhanced CORS configuration
 app.use(cors({
   origin: ['https://todosimpleeffective.vercel.app', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
