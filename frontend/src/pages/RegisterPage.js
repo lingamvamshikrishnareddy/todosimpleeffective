@@ -118,11 +118,20 @@ const RegisterPage = () => {
       // Redirect to login with success message
       history.push('/login?registered=true');
     } catch (err) {
-      // Extract error message
-      const errorMessage = err.message || 'Registration failed. Please try again.';
-      setError(errorMessage);
-      console.error('Registration error:', err);
-    } finally {
+  // Extract error message with better error handling
+  let errorMessage = 'Registration failed. Please try again.';
+  
+  if (err.response && err.response.data) {
+    // Server returned an error response
+    errorMessage = err.response.data.message || errorMessage;
+  } else if (err.message) {
+    // Local error (network, validation, etc.)
+    errorMessage = err.message;
+  }
+  
+  setError(errorMessage);
+  console.error('Registration error:', err.response ? err.response.data : err);
+} finally {
       setLoading(false);
     }
   };
