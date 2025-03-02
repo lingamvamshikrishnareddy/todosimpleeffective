@@ -14,7 +14,7 @@ const auth = require('../middleware/authMiddleware');
 const router = express.Router();
 
 // Auth routes
-router.post('/users', registerUser);  // Changed from '/auth/register' to '/users'
+router.post('/api/users', registerUser);  
 router.post('/auth/login', authUser);
 router.post('/users/logout', auth, logoutUser);  // Changed from '/auth/logout' to '/users/logout'
 
