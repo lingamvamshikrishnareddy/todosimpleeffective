@@ -1,69 +1,69 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 const Task = ({ task, onDelete, onEdit, onToggleComplete }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  // Ensure we're using the correct ID property consistently
+  const taskId = task._id || task.id;
   
-  const formatDate = (date) => {
-    if (!date) return '';
-    const d = new Date(date);
-    return d.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric',
-      year: 'numeric'
-    });
-  };
-
+  // Ensure we're properly handling the task title 
+  const taskTitle = task.title || task.text || "Untitled Task";
+  
   return (
-    <div className={`task-item ${task.completed ? 'completed' : ''}`}>
-      <div className="task-header" onClick={() => setIsExpanded(!isExpanded)}>
-        <div className="task-checkbox-title">
-          <input
-            type="checkbox"
-            checked={task.completed}
-            onChange={() => onToggleComplete(task.id)}
-            onClick={(e) => e.stopPropagation()}
-            className="task-checkbox"
-          />
-          <h3 className={task.completed ? 'completed-text' : ''}>{task.text}</h3>
-        </div>
-        <div className="task-actions">
-          <button 
-            className="icon-button edit-button" 
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(task);
-            }}
-            aria-label="Edit task"
-          >
-            ✏️
-          </button>
-          <button 
-            className="icon-button delete-button" 
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(task.id);
-            }}
-            aria-label="Delete task"
-          >
-            🗑️
-          </button>
-          <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
+    <div className={`task-item ${task.status === 'completed' ? 'completed' : ''}`}>
+      <div className="task-checkbox-title">
+        <input
+          type="checkbox"
+          className="task-checkbox"
+          checked={task.status === 'completed'}
+          onChange={() => onToggleComplete(taskId)}
+          id={`task-${taskId}`}
+        />
+        <div className="task-content">
+          <div className="task-header">
+            <label 
+              htmlFor={`task-${taskId}`} 
+              className={`task-title ${task.status === 'completed' ? 'completed-text' : ''}`}
+            >
+              {taskTitle}
+            </label>
+            
+            <div className="task-actions">
+              <button 
+                className="icon-button edit-button" 
+                onClick={() => onEdit(task)}
+                aria-label="Edit task"
+              >
+                <i className="fa fa-pencil"></i>
+              </button>
+              
+              <button 
+                className="icon-button delete-button" 
+                onClick={() => onDelete(taskId)}
+                aria-label="Delete task"
+              >
+                <i className="fa fa-trash"></i>
+              </button>
+            </div>
+          </div>
+          
+          {task.priority && (
+            <span className={`priority-badge priority-${task.priority.toLowerCase()}`}>
+              {task.priority}
+            </span>
+          )}
+          
+          {task.category && <span className="category-tag">{task.category}</span>}
+          
+          {task.description && (
+            <p className="task-description">{task.description}</p>
+          )}
+          
+          {task.dueDate && (
+            <div className="task-due-date">
+              <i className="fa fa-calendar"></i> Due: {new Date(task.dueDate).toLocaleDateString()}
+            </div>
+          )}
         </div>
       </div>
-      
-      {isExpanded && task.description && (
-        <div className="task-details">
-          <p className="task-description">{task.description}</p>
-          <div className="task-metadata">
-            {task.createdAt && (
-              <span className="task-date">Created: {formatDate(task.createdAt)}</span>
-            )}
-            {task.updatedAt && task.updatedAt !== task.createdAt && (
-              <span className="task-date">Updated: {formatDate(task.updatedAt)}</span>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 };
