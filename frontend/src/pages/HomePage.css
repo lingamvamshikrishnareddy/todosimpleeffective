@@ -1,0 +1,496 @@
+/* src/pages/HomePage/HomePage.css */
+
+/* --- Root Variables (Based on your original styles.css) --- */
+:root {
+    --primary-color: #4361ee;
+    --primary-hover: #3a56d4;
+    --secondary-color: #3f37c9;
+    --accent-color: #4cc9f0;
+    --success-color: #4caf50;
+    --danger-color: #f44336;
+    --light-gray: #f8f9fa;
+    --medium-gray: #e9ecef;
+    --dark-gray: #6c757d;
+    --text-color: #333;
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.08); /* Slightly softer */
+    --shadow-md: 0 5px 10px rgba(0, 0, 0, 0.1); /* Slightly more pronounced */
+    --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.12); /* More depth */
+    --border-radius: 8px;
+    --transition-speed: 0.3s ease-in-out;
+    --content-width: 90%;
+    --content-max-width: 1100px; /* Slightly adjusted */
+    --font-primary: 'Segoe UI', 'Roboto', Arial, sans-serif;
+}
+
+/* --- Base Styles --- */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-primary);
+    line-height: 1.7; /* Slightly increased for readability */
+    color: var(--text-color);
+    background-color: #ffffff; /* Changed default background to white for cleaner sections */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3 {
+    line-height: 1.3;
+    margin-bottom: 0.75em;
+    font-weight: 700;
+}
+
+p {
+    margin-bottom: 1em;
+    color: var(--dark-gray); /* Default paragraph color */
+}
+
+a {
+    color: var(--primary-color);
+    text-decoration: none;
+    transition: color var(--transition-speed);
+}
+
+a:hover {
+    color: var(--primary-hover);
+    text-decoration: underline;
+}
+
+/* --- Layout Container --- */
+.page-container {
+    width: 100%;
+    /* background-color: var(--light-gray); Ensures background outside sections */
+    overflow-x: hidden; /* Prevent horizontal scroll */
+}
+
+/* Helper for consistent section padding and width */
+.content-wrapper {
+    width: var(--content-width);
+    max-width: var(--content-max-width);
+    margin: 0 auto; /* Center the content */
+    padding: 60px 15px; /* More vertical padding for sections */
+}
+
+/* --- Header --- */
+.app-header {
+    background-color: var(--primary-color);
+    padding: 15px 0;
+    box-shadow: var(--shadow-md);
+    position: sticky; /* Make header sticky */
+    top: 0;
+    z-index: 100;
+}
+
+.header-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: var(--content-width);
+    max-width: var(--content-max-width);
+    margin: 0 auto;
+    padding: 0 15px;
+}
+
+.app-logo {
+    font-size: 28px;
+    font-weight: 700;
+    color: white;
+    text-decoration: none !important; /* Override default link styles */
+}
+.app-logo:hover {
+    text-decoration: none; /* Override hover effect */
+}
+
+.main-nav a {
+    color: rgba(255, 255, 255, 0.8);
+    margin-left: 25px;
+    font-weight: 500;
+    text-decoration: none;
+}
+
+.main-nav a:hover, .main-nav a.active {
+    color: white;
+    text-decoration: none;
+}
+
+/* --- Hero Section --- */
+.hero-section {
+    background: linear-gradient(45deg, var(--primary-color), var(--secondary-color));
+    color: white;
+    text-align: center;
+    padding: 100px 20px 80px; /* Increased padding */
+}
+
+.hero-title {
+    font-size: 42px; /* Larger title */
+    font-weight: 700;
+    margin-bottom: 20px;
+}
+
+.hero-subtitle {
+    font-size: 20px;
+    max-width: 650px;
+    margin: 0 auto 30px;
+    opacity: 0.9;
+    line-height: 1.6;
+}
+
+.cta-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+/* --- Button Styles --- */
+.button {
+    display: inline-block;
+    padding: 12px 28px; /* Slightly larger padding */
+    border: none;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    transition: all var(--transition-speed); /* Apply transition to all properties */
+    text-decoration: none !important; /* Ensure link styling is overridden */
+    box-shadow: var(--shadow-sm);
+}
+
+.button:hover {
+    transform: translateY(-3px); /* More noticeable hover lift */
+    box-shadow: var(--shadow-md);
+    text-decoration: none !important; /* Keep link style override on hover */
+}
+
+.button:active {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+}
+
+.button-primary {
+    background-color: var(--accent-color); /* Use accent for primary CTA */
+    color: var(--text-color);
+    border: 2px solid var(--accent-color);
+}
+
+.button-primary:hover {
+    background-color: #3dc1e3; /* Slightly lighter accent */
+    border-color: #3dc1e3;
+    color: #fff;
+}
+
+.button-secondary {
+    background-color: transparent;
+    color: white;
+    border: 2px solid white; /* Outline style */
+}
+
+.button-secondary:hover {
+    background-color: white;
+    color: var(--primary-color);
+}
+
+/* --- Features/Benefits Section --- */
+.benefits-section {
+    background-color: var(--light-gray); /* Alternate background */
+}
+
+.section-title {
+    text-align: center;
+    font-size: 32px;
+    margin-bottom: 40px;
+    color: var(--secondary-color);
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 30px; /* Increased gap */
+}
+
+.feature-card {
+    background-color: white;
+    padding: 35px 30px; /* Adjusted padding */
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--transition-speed), box-shadow var(--transition-speed);
+    border: 1px solid var(--medium-gray);
+    text-align: center;
+}
+
+.feature-card:hover {
+    transform: translateY(-5px);
+    box-shadow: var(--shadow-lg);
+}
+
+.feature-icon {
+    font-size: 48px;
+    margin-bottom: 20px;
+    color: var(--primary-color); /* Icon color */
+}
+
+.feature-card h3 {
+    margin-bottom: 15px;
+    color: var(--secondary-color); /* Match section title */
+    font-weight: 600;
+    font-size: 20px;
+}
+
+/* --- How It Works Section --- */
+.how-it-works-section {
+    background-color: #ffffff; /* White background */
+}
+
+.steps-container {
+    display: flex;
+    justify-content: space-around;
+    flex-wrap: wrap;
+    gap: 30px;
+    margin-top: 30px;
+}
+
+.step-item {
+    text-align: center;
+    max-width: 250px;
+    flex: 1 1 200px; /* Flex properties for responsiveness */
+}
+
+.step-number {
+    display: inline-block;
+    width: 50px;
+    height: 50px;
+    line-height: 50px;
+    border-radius: 50%;
+    background-color: var(--accent-color);
+    color: white;
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow-sm);
+}
+
+.step-item h4 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--primary-color);
+    margin-bottom: 10px;
+}
+
+/* --- Visual Showcase Section --- */
+.visual-showcase-section {
+    background-color: var(--light-gray);
+}
+
+.visual-showcase-content {
+    text-align: center;
+}
+
+.app-mockup {
+    display: block;
+    max-width: 80%; /* Responsive image size */
+    height: auto;
+    margin: 30px auto 0;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-lg);
+    border: 5px solid white;
+}
+
+/* --- Testimonial Section --- */
+.testimonial-section {
+    background-color: var(--secondary-color);
+    color: white;
+}
+
+.testimonial {
+    max-width: 700px;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 18px; /* Slightly larger quote */
+    font-style: italic;
+    position: relative;
+    padding: 0 20px;
+}
+
+.testimonial::before,
+.testimonial::after {
+    content: '"';
+    font-size: 60px;
+    position: absolute;
+    opacity: 0.2;
+    line-height: 1;
+}
+
+.testimonial::before {
+    top: -10px;
+    left: -10px;
+}
+
+.testimonial::after {
+    bottom: -30px;
+    right: -10px;
+}
+
+.testimonial-quote {
+    margin-bottom: 20px;
+    opacity: 0.95;
+}
+
+.testimonial-author {
+    font-weight: 600;
+    font-style: normal;
+    font-size: 16px;
+    opacity: 0.8;
+}
+
+/* --- Final CTA Section --- */
+.final-cta-section {
+    background-color: var(--primary-color);
+    color: white;
+    text-align: center;
+}
+
+.final-cta-title {
+    font-size: 28px;
+    margin-bottom: 15px;
+}
+
+.final-cta-text {
+    max-width: 600px;
+    margin: 0 auto 30px;
+    opacity: 0.9;
+}
+
+/* Use same button styles, adjust wrapper if needed */
+.final-cta-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+
+/* --- Footer --- */
+.footer {
+    background-color: var(--medium-gray);
+    padding: 30px 0;
+    text-align: center;
+    border-top: 1px solid #dcdcdc;
+}
+
+.footer-content {
+    width: var(--content-width);
+    max-width: var(--content-max-width);
+    margin: 0 auto;
+    padding: 0 15px;
+}
+
+.footer-links {
+    display: flex;
+    justify-content: center;
+    gap: 30px; /* Increased gap */
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.footer-links a {
+    color: var(--dark-gray);
+    text-decoration: none;
+    font-size: 14px; /* Slightly smaller footer links */
+    font-weight: 500;
+}
+
+.footer-links a:hover {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
+
+.copyright {
+    color: var(--dark-gray);
+    font-size: 14px;
+}
+
+/* --- Responsive Design --- */
+@media (max-width: 992px) {
+    .hero-title {
+        font-size: 36px;
+    }
+    .hero-subtitle {
+        font-size: 18px;
+    }
+    .section-title {
+        font-size: 28px;
+    }
+    .content-wrapper {
+       padding: 50px 15px;
+    }
+}
+
+
+@media (max-width: 768px) {
+    .header-content {
+        flex-direction: column;
+        padding-bottom: 10px;
+    }
+    .main-nav {
+        margin-top: 10px;
+    }
+    .main-nav a {
+        margin: 0 10px;
+    }
+
+    .hero-title {
+        font-size: 32px;
+    }
+    .hero-subtitle {
+        font-size: 16px;
+        max-width: 90%;
+    }
+    .feature-grid {
+        grid-template-columns: 1fr; /* Stack features */
+    }
+    .steps-container {
+        flex-direction: column;
+        align-items: center;
+    }
+    .step-item {
+        max-width: 80%;
+        margin-bottom: 20px;
+    }
+    .app-mockup {
+        max-width: 95%;
+    }
+    .testimonial::before,
+    .testimonial::after {
+        font-size: 40px; /* Smaller quotes on mobile */
+    }
+    .final-cta-title {
+        font-size: 24px;
+    }
+     .footer-links {
+        gap: 20px;
+    }
+}
+
+@media (max-width: 576px) {
+    .hero-section {
+        padding: 80px 15px 60px;
+    }
+    .hero-title {
+        font-size: 28px;
+    }
+     .button {
+        padding: 10px 20px;
+        font-size: 15px;
+    }
+    .cta-buttons, .final-cta-buttons {
+        gap: 15px;
+    }
+     .section-title {
+        font-size: 24px;
+    }
+}

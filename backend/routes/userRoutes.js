@@ -1,44 +1,42 @@
-// In routes/userRoutes.js
+// routes/userRoutes.js
 const express = require('express');
-const { 
-  registerUser, 
-  authUser, 
+const {
+  registerUser,
+  authUser,
+  refreshToken, // Import refreshToken
   logoutUser,
   forgotPassword,
   validateResetToken,
   resetPassword,
-  getUserProfile
+  getUserProfile,
+  updateUserProfile, // Import updateUserProfile
+  changePassword // Import changePassword
 } = require('../controllers/userController');
-const auth = require('../middleware/authMiddleware');
+const auth = require('../middleware/authMiddleware'); // Ensure this correctly verifies JWT
 
 const router = express.Router();
 
-// Auth routes
-router.post('/users', registerUser);  // Changed from '/auth/register' to '/users'
+// --- Authentication Routes ---
+router.post('/auth/register', registerUser);
 router.post('/auth/login', authUser);
-router.post('/users/logout', auth, logoutUser);  // Changed from '/auth/logout' to '/users/logout'
+router.post('/auth/refresh', refreshToken); // Add refresh route
+router.post('/auth/logout', logoutUser); // Logout might not need auth middleware if just clearing client-side state, but good practice if invalidating server tokens
 
-// Add refresh token endpoint
-router.post('/auth/refresh', (req, res) => {
-  // Implement token refresh logic here
-  // This is a placeholder for the actual implementation
-  const { refreshToken } = req.body;
-  
-  // Validate refresh token and generate new access token
-  // ...
-  
-  res.json({
-    token: "new-access-token",
-    refreshToken: "new-refresh-token"
-  });
-});
+// --- Password Reset Routes ---
+router.post('/auth/forgot-password', forgotPassword); // Changed to /auth/forgot-password
+router.get('/auth/reset-password/:token', validateResetToken); // Changed to /auth/reset-password/:token
+router.post('/auth/reset-password/confirm', resetPassword); // Changed to /auth/reset-password/confirm
 
-// Password reset routes
-router.post('/users/forgot-password', forgotPassword);  // Changed from '/auth/forgot-password'
-router.get('/users/reset-password/:token', validateResetToken);  // Changed from '/auth/reset-password/:token'
-router.post('/users/reset-password', resetPassword);  // Changed from '/auth/reset-password'
+// --- User Profile Routes (Protected) ---
+router.get('/user/profile', auth, getUserProfile); // Route requires authentication
+router.put('/user/profile', auth, updateUserProfile); // Add update profile route
+router.put('/user/password', auth, changePassword); // Add change password route
 
-// Profile routes
-router.get('/users/profile', auth, getUserProfile);  // Changed from '/profile'
+
+// --- Deprecated/Incorrect routes to remove or correct ---
+// router.post('/users', registerUser); // Remove this if using /auth/register
+// router.post('/users/logout', auth, logoutUser); // Remove this if using /auth/logout
+// router.get('/users/profile', auth, getUserProfile); // Remove this if using /user/profile
+
 
 module.exports = router;

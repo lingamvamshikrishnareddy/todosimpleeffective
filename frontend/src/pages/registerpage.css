@@ -1,0 +1,265 @@
+/* src/pages/registerpage.css */
+
+/* Shared Auth Styles (Copied from loginpage.css - consider a common file) */
+.auth-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: calc(100vh - 60px);
+    padding: 2rem 1rem;
+    background-color: #f8f9fa;
+  }
+  
+  .auth-card {
+    background-color: #ffffff;
+    padding: 2.5rem 2rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 480px; /* Slightly wider for registration */
+    border: 1px solid #dee2e6;
+  }
+  
+  .auth-title {
+    text-align: center;
+    margin-bottom: 1.5rem;
+    font-size: 1.75rem;
+    font-weight: 600;
+    color: #343a40;
+  }
+  
+  .auth-form .form-group {
+    margin-bottom: 1.25rem;
+  }
+  
+  .auth-form label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #495057;
+  }
+  
+  .form-input {
+    display: block;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: #495057;
+    background-color: #fff;
+    background-clip: padding-box;
+    border: 1px solid #ced4da;
+    border-radius: 0.375rem;
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  }
+  
+  .form-input:focus {
+    color: #495057;
+    background-color: #fff;
+    border-color: #86b7fe;
+    outline: 0;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+  }
+  
+  .form-input::placeholder {
+    color: #6c757d;
+    opacity: 1;
+  }
+  
+  .form-input:disabled {
+    background-color: #e9ecef;
+    opacity: 1;
+  }
+  
+  .button {
+    display: inline-block;
+    font-weight: 500;
+    line-height: 1.5;
+    color: #fff;
+    text-align: center;
+    text-decoration: none;
+    vertical-align: middle;
+    cursor: pointer;
+    user-select: none;
+    background-color: #0d6efd;
+    border: 1px solid #0d6efd;
+    padding: 0.75rem 1.25rem;
+    font-size: 1rem;
+    border-radius: 0.375rem;
+    transition: color 0.15s ease-in-out, background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  }
+  
+  .button-primary {
+    /* Inherits from .button */
+  }
+  
+  .button:hover {
+    background-color: #0b5ed7;
+    border-color: #0a58ca;
+  }
+  
+  .button:focus {
+    outline: 0;
+    box-shadow: 0 0 0 0.25rem rgba(49, 132, 253, 0.5);
+  }
+  
+  .button:disabled {
+    background-color: #0d6efd;
+    border-color: #0d6efd;
+    opacity: 0.65;
+    cursor: not-allowed;
+  }
+  
+  .button-block {
+    display: block;
+    width: 100%;
+  }
+  
+  .button .spinner-border {
+    margin-right: 0.5rem;
+    vertical-align: text-bottom;
+  }
+  
+  /* Alert Styles (Shared) */
+  .alert {
+    position: relative;
+    padding: 1rem 1rem;
+    margin-bottom: 1rem;
+    border: 1px solid transparent;
+    border-radius: 0.375rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .alert-danger {
+    color: #842029;
+    background-color: #f8d7da;
+    border-color: #f5c2c7;
+  }
+  
+  /* Add success if needed, currently not used on register */
+  /* .alert-success { ... } */
+  
+  .alert-dismissible .btn-close {
+    padding: 1.1rem 1rem;
+    background: transparent;
+    border: 0;
+    font-size: 1.25rem;
+    font-weight: bold;
+    line-height: 1;
+    color: inherit;
+    text-shadow: none;
+    opacity: 0.7;
+    cursor: pointer;
+    margin-left: 1rem;
+  }
+  .alert-dismissible .btn-close:hover {
+      opacity: 1;
+  }
+  
+  /* Footer Link (Shared) */
+  .auth-footer {
+    text-align: center;
+    margin-top: 1.5rem;
+    font-size: 0.9rem;
+    color: #6c757d;
+  }
+  
+  .auth-footer p {
+    margin-bottom: 0;
+  }
+  
+  .auth-footer a {
+    color: #0d6efd;
+    text-decoration: none;
+    font-weight: 500;
+  }
+  
+  .auth-footer a:hover {
+    text-decoration: underline;
+  }
+  
+  /* Specific Register Page Styles */
+  
+  /* Password Strength Meter */
+  .password-strength-meter {
+    margin-top: 0.5rem; /* Space below password input */
+  }
+  
+  .progress {
+    display: flex;
+    height: 8px; /* Match JSX style */
+    overflow: hidden;
+    font-size: .75rem;
+    background-color: #e9ecef; /* Background of the track */
+    border-radius: 0.375rem; /* Rounded corners */
+  }
+  
+  .progress-bar {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+    color: #fff; /* Text color if needed, though height is small */
+    text-align: center;
+    white-space: nowrap;
+    background-color: #0d6efd; /* Default color (should be overridden by inline style) */
+    transition: width .6s ease; /* Match JSX transition */
+    border-radius: 0.375rem; /* Rounded corners */
+  }
+  
+  /* Form text and help text */
+  .form-text {
+    margin-top: 0.25rem;
+    font-size: .875em;
+    color: #6c757d; /* Muted text color */
+  }
+  .text-muted { color: #6c757d !important; }
+  .d-block { display: block !important; }
+  .mt-1 { margin-top: 0.25rem !important; }
+  .mt-2 { margin-top: 0.5rem !important; }
+  .my-3 { margin-top: 1rem !important; margin-bottom: 1rem !important; }
+  .small { font-size: .875em; }
+  
+  /* Validation Feedback */
+  .form-input.is-invalid {
+    border-color: #dc3545; /* Red border for invalid */
+    padding-right: calc(1.5em + 0.75rem); /* Adjust padding if using background icons */
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' width='12' height='12' fill='none' stroke='%23dc3545'%3e%3ccircle cx='6' cy='6' r='4.5'/%3e%3cpath stroke-linejoin='round' d='M5.8 3.6h.4L6 6.5z'/%3e%3ccircle cx='6' cy='8.2' r='.6' fill='%23dc3545' stroke='none'/%3e%3c/svg%3e"); /* Bootstrap 5 invalid icon */
+    background-repeat: no-repeat;
+    background-position: right calc(0.375em + 0.1875rem) center;
+    background-size: calc(0.75em + 0.375rem) calc(0.75em + 0.375rem);
+  }
+  
+  .form-input.is-invalid:focus {
+    border-color: #dc3545;
+    box-shadow: 0 0 0 0.25rem rgba(220, 53, 69, 0.25); /* Red focus shadow */
+  }
+  
+  .invalid-feedback {
+    /* display: none; */ /* Handled by d-block in JSX */
+    width: 100%;
+    margin-top: 0.25rem;
+    font-size: .875em;
+    color: #dc3545; /* Error message color */
+  }
+  
+  /* Terms Agreement Link Styling */
+  .terms-agreement {
+    margin-top: 1rem;
+    margin-bottom: 1.5rem; /* Space before button */
+    font-size: 0.85rem;
+    color: #6c757d;
+    text-align: center; /* Center align terms */
+  }
+  
+  .terms-agreement a {
+    color: #0d6efd;
+    text-decoration: none;
+    font-weight: 500;
+  }
+  
+  .terms-agreement a:hover {
+    text-decoration: underline;
+  }

@@ -2,45 +2,67 @@ import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || '/api';
 
-
 // Create axios instance with defaults
 const apiClient = axios.create({
-    baseURL: API_URL,
-    timeout: 10000, // 10 second timeout
-    headers: {
-      'Content-Type': 'application/json',
+  baseURL: API_URL,
+  timeout: 15000, // Increased timeout for network congestion
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  withCredentials: true // Send cookies with cross-origin requests
+});
+
+// Request interceptor for adding auth token
+apiClient.interceptors.request.use(
+  config => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
     }
-  });
-  
-  // Request interceptor for adding auth token
-  apiClient.interceptors.request.use(
-    config => {
-      const token = localStorage.getItem('authToken');
-      if (token) {
-        config.headers['Authorization'] = `Bearer ${token}`;
-      }
-      return config;
-    },
-    error => Promise.reject(error)
-  );
+    return config;
+  },
+  error => Promise.reject(error)
+);
 
-  
-
-// Response interceptor for global error handling and retries
+// Enhanced response interceptor with better retry logic and rate limiting handling
 const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+const RETRY_CODES = [408, 429, 500, 502, 503, 504];
+
 apiClient.interceptors.response.use(
   response => response.data,
   async error => {
     const originalRequest = error.config;
     
-    // Implement retry logic for network errors or server errors (5xx)
-    if ((error.response && error.response.status >= 500) || error.code === 'ECONNABORTED') {
-      if (!originalRequest._retry || originalRequest._retry < MAX_RETRIES) {
+    // Skip retry for certain endpoints to avoid duplication
+    const skipRetryEndpoints = ['/tasks/bulk-delete', '/tasks/bulk-update', '/auth/logout'];
+    const shouldSkipRetry = skipRetryEndpoints.some(endpoint => originalRequest.url.includes(endpoint));
+    
+    if (!shouldSkipRetry && (!originalRequest._retry || originalRequest._retry < MAX_RETRIES)) {
+      const status = error.response?.status;
+      
+      // Retry on network errors or specific status codes
+      if (!error.response || RETRY_CODES.includes(status)) {
         originalRequest._retry = (originalRequest._retry || 0) + 1;
         
-        // Exponential backoff
-        const delay = Math.pow(2, originalRequest._retry) * 300;
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Calculate backoff delay with jitter to prevent thundering herd
+        const jitter = Math.random() * 0.3;
+        const backoffFactor = Math.min(Math.pow(2, originalRequest._retry - 1), 10);
+        const delay = RETRY_DELAY_MS * backoffFactor * (1 + jitter);
+        
+        console.log(`API retry ${originalRequest._retry}/${MAX_RETRIES} for ${originalRequest.url} after ${Math.round(delay)}ms`);
+        
+        // Special handling for rate limiting
+        if (status === 429) {
+          // Extract retry-after header if available or use our calculated delay
+          const retryAfter = error.response.headers['retry-after'];
+          const retryDelay = retryAfter ? parseInt(retryAfter, 10) * 1000 : delay;
+          
+          console.log(`Rate limited. Retrying after ${retryDelay}ms`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        } else {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
         
         return apiClient(originalRequest);
       }
@@ -48,61 +70,174 @@ apiClient.interceptors.response.use(
     
     // Handle 401 Unauthorized - refresh token or redirect to login
     if (error.response && error.response.status === 401) {
+      // Skip refresh token attempt if already in progress
+      if (originalRequest.url.includes('/auth/refresh') || originalRequest._hasRefreshed) {
+        throw new Error('Token refresh failed');
+      }
+      
+      // Flag to prevent infinite refresh loop
+      originalRequest._hasRefreshed = true;
+      
       try {
         // Attempt to refresh token
         const refreshToken = localStorage.getItem('refreshToken');
-        if (refreshToken) {
-          // Don't retry the refresh token request
-          if (originalRequest.url === '/auth/refresh') {
-            throw error;
-          }
-          
-          // Call refresh token endpoint
-          const response = await axios.post(`${API_URL}/auth/refresh`, {
-            refreshToken
-          });
-          
-          // Update tokens
-          const { token } = response.data;
-          localStorage.setItem('authToken', token);
-          
-          // Retry original request with new token
-          originalRequest.headers['Authorization'] = `Bearer ${token}`;
-          return apiClient(originalRequest);
+        if (!refreshToken) {
+          throw new Error('No refresh token available');
         }
+        
+        // Call refresh token endpoint
+        const response = await axios.post(`${API_URL}/auth/refresh`, {
+          refreshToken
+        }, {
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          withCredentials: true // Send cookies
+        });
+        
+        // Update tokens
+        const { token } = response.data;
+        localStorage.setItem('authToken', token);
+        
+        // Update authorization header and retry
+        originalRequest.headers['Authorization'] = `Bearer ${token}`;
+        return apiClient(originalRequest);
       } catch (refreshError) {
-        // If refresh fails, redirect to login
+        // If refresh fails, clean up tokens and redirect to login
         localStorage.removeItem('authToken');
         localStorage.removeItem('refreshToken');
-        window.location.href = '/login';
+        
+        // Don't redirect for background API calls
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+        
+        throw refreshError; // Re-throw to properly handle the error
       }
     }
     
-    return Promise.reject(error.response ? error.response.data : error);
+    // Create a standardized error object
+    const errorResponse = {
+      status: error.response?.status,
+      message: error.response?.data?.message || error.message,
+      data: error.response?.data
+    };
+    
+    return Promise.reject(errorResponse);
   }
 );
 
+// Authentication utilities
+// Check if user is authenticated
+const isAuthenticated = () => {
+  const token = localStorage.getItem('authToken');
+  if (!token) return false;
+  
+  // Optional: Check if token is expired
+  try {
+    // Get payload from JWT (token structure: header.payload.signature)
+    const payload = token.split('.')[1];
+    if (!payload) return false;
+    
+    const decodedData = JSON.parse(atob(payload));
+    const expirationTime = decodedData.exp * 1000; // Convert to milliseconds
+    
+    return expirationTime > Date.now();
+  } catch (error) {
+    console.error('Error checking token validity:', error);
+    return false;
+  }
+};
 
-// Task API endpoints with request batching and caching capabilities
+// Get current user ID from token
+const getCurrentUserId = () => {
+  const token = localStorage.getItem('authToken');
+  if (!token) return null;
+  
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    
+    const decodedData = JSON.parse(atob(payload));
+    return decodedData.id;
+  } catch (error) {
+    console.error('Error extracting user ID from token:', error);
+    return null;
+  }
+};
+
+// Logout helper
+const logout = () => {
+  localStorage.removeItem('authToken');
+  localStorage.removeItem('refreshToken');
+  
+  // If you're using cookies for refresh tokens, you would also clear them here
+  // via the logout API endpoint
+  return apiClient.post('/auth/logout').catch(error => {
+    console.warn('Error during logout API call:', error);
+    // Continue with client-side logout even if server logout fails
+  });
+};
+
+// Login helper
+const login = async (credentials) => {
+  const data = await apiClient.post('/auth/login', credentials);
+  if (data.token) {
+    localStorage.setItem('authToken', data.token);
+  }
+  if (data.refreshToken) {
+    localStorage.setItem('refreshToken', data.refreshToken);
+  }
+  return data;
+};
+
+// Enhanced Task API with better request management and queuing
 class TaskAPI {
   constructor() {
     this.cache = new Map();
     this.pendingRequests = new Map();
-    this.batchTimeout = null;
-    this.batchSize = 50; // Maximum batch size
-    this.batchQueue = [];
     this.requestQueue = [];
+    this.processing = false;
+    this.activeRequests = 0;
+    this.MAX_CONCURRENT = 6; // Maximum concurrent requests
     
-    // Cache config
-    this.cacheExpiry = 30000; // 30 seconds
+    // Rate limiting parameters
+    this.rateLimitPerSecond = 10;
+    this.requestTimestamps = [];
+    
+    // Cache config with adaptive expiration
+    this.cacheConfig = {
+      defaultExpiry: 30000, // 30 seconds
+      longExpiry: 5 * 60 * 1000, // 5 minutes for static resources
+      shortExpiry: 10000 // 10 seconds for frequently changing data
+    };
   }
   
-  // Get cached data or fetch new
-  getCachedData(key, fetchFn) {
+  // Check if we should apply rate limiting
+  shouldRateLimit() {
+    const now = Date.now();
+    
+    // Remove timestamps older than 1 second
+    this.requestTimestamps = this.requestTimestamps.filter(time => now - time < 1000);
+    
+    // Check if we've reached our limit
+    return this.requestTimestamps.length >= this.rateLimitPerSecond;
+  }
+  
+  // Track request for rate limiting
+  trackRequest() {
+    this.requestTimestamps.push(Date.now());
+  }
+  
+  // Enhanced cache management with expiration policies
+  getCachedData(key, fetchFn, options = {}) {
     const cached = this.cache.get(key);
+    const expiryTime = options.longCache 
+      ? this.cacheConfig.longExpiry 
+      : (options.shortCache ? this.cacheConfig.shortExpiry : this.cacheConfig.defaultExpiry);
     
     // If we have valid cached data, use it
-    if (cached && Date.now() - cached.timestamp < this.cacheExpiry) {
+    if (cached && Date.now() - cached.timestamp < expiryTime) {
       return Promise.resolve(cached.data);
     }
     
@@ -112,17 +247,19 @@ class TaskAPI {
     }
     
     // Make a new request and cache the promise
-    const request = fetchFn().then(data => {
-      this.cache.set(key, {
-        data,
-        timestamp: Date.now()
+    const request = this.enqueueRequest(() => fetchFn())
+      .then(data => {
+        this.cache.set(key, {
+          data,
+          timestamp: Date.now()
+        });
+        this.pendingRequests.delete(key);
+        return data;
+      })
+      .catch(error => {
+        this.pendingRequests.delete(key);
+        throw error;
       });
-      this.pendingRequests.delete(key);
-      return data;
-    }).catch(error => {
-      this.pendingRequests.delete(key);
-      throw error;
-    });
     
     this.pendingRequests.set(key, request);
     return request;
@@ -130,124 +267,102 @@ class TaskAPI {
   
   // Clear cache for a specific key or entire cache
   invalidateCache(key = null) {
-    if (key) {
-      this.cache.delete(key);
-    } else {
+    if (key === null) {
       this.cache.clear();
-    }
-  }
-  
-  // Add request to batch queue
-  addToBatch(endpoint, data, resolve, reject) {
-    this.batchQueue.push({ endpoint, data, resolve, reject });
-    
-    // Process batch immediately if we've reached max batch size
-    if (this.batchQueue.length >= this.batchSize) {
-      this.processBatch();
-    } else if (!this.batchTimeout) {
-      // Otherwise set a timeout to process batch soon
-      this.batchTimeout = setTimeout(() => this.processBatch(), 50);
-    }
-  }
-  
-  // Process queued requests in a batch
-  async processBatch() {
-    if (this.batchTimeout) {
-      clearTimeout(this.batchTimeout);
-      this.batchTimeout = null;
-    }
-    
-    if (this.batchQueue.length === 0) return;
-    
-    const batch = this.batchQueue.splice(0, this.batchSize);
-    
-    try {
-      // Group requests by endpoint
-      const endpointGroups = {};
-      batch.forEach(item => {
-        if (!endpointGroups[item.endpoint]) {
-          endpointGroups[item.endpoint] = [];
+    } else if (typeof key === 'string') {
+      this.cache.delete(key);
+    } else if (typeof key === 'function') {
+      // Handle function-based invalidation
+      for (const cacheKey of this.cache.keys()) {
+        if (key(cacheKey)) {
+          this.cache.delete(cacheKey);
         }
-        endpointGroups[item.endpoint].push(item);
-      });
-      
-      // Process each endpoint group
-      const promises = Object.entries(endpointGroups).map(async ([endpoint, items]) => {
-        try {
-          // Make a batch request to the server
-          const payload = items.map(item => item.data);
-          const response = await apiClient.post(`/batch${endpoint}`, { items: payload });
-          
-          // Distribute responses to original requesters
-          response.forEach((result, index) => {
-            if (result.error) {
-              items[index].reject(result.error);
-            } else {
-              items[index].resolve(result.data);
-            }
-          });
-        } catch (error) {
-          // On batch failure, reject all requests in this group
-          items.forEach(item => item.reject(error));
-        }
-      });
-      
-      await Promise.allSettled(promises);
-    } catch (error) {
-      console.error('Batch processing error:', error);
-      // Reject all requests on catastrophic failure
-      batch.forEach(item => item.reject(error));
-    }
-    
-    // Process any new items that were added during this batch
-    if (this.batchQueue.length > 0) {
-      this.processBatch();
+      }
     }
   }
   
-  // Queue management for throttling
-  enqueueRequest(fn) {
+  // Improved request queuing with priority support
+  enqueueRequest(fn, priority = 'normal') {
     return new Promise((resolve, reject) => {
-      this.requestQueue.push({ fn, resolve, reject });
+      const request = { fn, resolve, reject, priority, timestamp: Date.now() };
       
-      // Start processing the queue if it's not already running
-      if (this.requestQueue.length === 1) {
+      // Insert by priority (high, normal, low)
+      if (priority === 'high') {
+        this.requestQueue.unshift(request);
+      } else if (priority === 'low') {
+        this.requestQueue.push(request);
+      } else {
+        // Insert normal priority requests at the front of normal/low section
+        const index = this.requestQueue.findIndex(r => r.priority === 'low');
+        if (index === -1) {
+          this.requestQueue.push(request);
+        } else {
+          this.requestQueue.splice(index, 0, request);
+        }
+      }
+      
+      // Start processing the queue if not already running
+      if (!this.processing) {
         this.processQueue();
       }
     });
   }
   
+  // Process request queue with improved concurrency management
   async processQueue() {
-    const MAX_CONCURRENT = 10;
-    const RATE_LIMIT = 100; // Process 100 requests per second
+    if (this.processing) return;
+    this.processing = true;
     
     const processNext = async () => {
-      if (this.requestQueue.length === 0) return;
-      
-      const { fn, resolve, reject } = this.requestQueue.shift();
-      
-      try {
-        const result = await fn();
-        resolve(result);
-      } catch (error) {
-        reject(error);
+      // Stop if queue is empty or we've reached max concurrent requests
+      if (this.requestQueue.length === 0 || this.activeRequests >= this.MAX_CONCURRENT) {
+        if (this.requestQueue.length === 0 && this.activeRequests === 0) {
+          this.processing = false;
+        }
+        return;
       }
       
-      // Rate limiting with setTimeout
-      setTimeout(() => {
+      // Check rate limiting
+      if (this.shouldRateLimit()) {
+        // Wait a bit before trying again
+        setTimeout(() => processNext(), 100);
+        return;
+      }
+      
+      // Dequeue request
+      const request = this.requestQueue.shift();
+      this.activeRequests++;
+      this.trackRequest();
+      
+      try {
+        const result = await request.fn();
+        request.resolve(result);
+      } catch (error) {
+        request.reject(error);
+      } finally {
+        this.activeRequests--;
+        // Process next item
         processNext();
-      }, 1000 / RATE_LIMIT);
+      }
     };
     
-    // Start multiple concurrent processors
-    const processors = Array(Math.min(MAX_CONCURRENT, this.requestQueue.length))
+    // Start multiple processors up to MAX_CONCURRENT
+    const processors = Array(Math.min(this.MAX_CONCURRENT, this.requestQueue.length))
       .fill()
       .map(() => processNext());
     
     await Promise.allSettled(processors);
+    
+    // If there are still items in the queue, continue processing
+    if (this.requestQueue.length > 0 && this.activeRequests < this.MAX_CONCURRENT) {
+      this.processQueue();
+    } else if (this.requestQueue.length === 0 && this.activeRequests === 0) {
+      this.processing = false;
+    }
   }
   
-  // API methods for tasks
+  // Enhanced API methods with better error handling and caching
+  
   getTasks(params = {}) {
     const queryParams = new URLSearchParams();
     
@@ -260,315 +375,222 @@ class TaskAPI {
     const queryString = queryParams.toString();
     const cacheKey = `tasks_${queryString}`;
     
+    // Short expiry for task lists as they change frequently
     return this.getCachedData(cacheKey, () => 
-      this.enqueueRequest(() => apiClient.get(`/tasks?${queryString}`))
-    );
+      apiClient.get(`/tasks?${queryString}`)
+    , { shortCache: true });
   }
   
-  getTaskById(id) {
-    const cacheKey = `task_${id}`;
+  getTaskById(taskId) {
+    const cacheKey = `task_${taskId}`;
     
-    return this.getCachedData(cacheKey, () => 
-      this.enqueueRequest(() => apiClient.get(`/tasks/${id}`))
+    return this.getCachedData(cacheKey, () =>
+      apiClient.get(`/tasks/${taskId}`)
     );
   }
   
   createTask(taskData) {
-    return this.enqueueRequest(() => 
+    // Invalidate task list cache on create
+    this.invalidateCache((key) => key.startsWith('tasks_'));
+    
+    return this.enqueueRequest(() =>
       apiClient.post('/tasks', taskData)
-    ).then(response => {
-      this.invalidateCache(); // Invalidate task list cache
-      return response;
-    });
+    , 'high');
   }
   
-  updateTask(id, taskData) {
-    return this.enqueueRequest(() => 
-      apiClient.put(`/tasks/${id}`, taskData)
-    ).then(response => {
+  updateTask(taskId, taskData) {
+    // Invalidate specific task cache and task lists
+    this.invalidateCache(`task_${taskId}`);
+    this.invalidateCache((key) => key.startsWith('tasks_'));
+    
+    return this.enqueueRequest(() =>
+      apiClient.put(`/tasks/${taskId}`, taskData)
+    );
+  }
+  
+  deleteTask(taskId) {
+    // Invalidate specific task cache and task lists
+    this.invalidateCache(`task_${taskId}`);
+    this.invalidateCache((key) => key.startsWith('tasks_'));
+    
+    return this.enqueueRequest(() =>
+      apiClient.delete(`/tasks/${taskId}`)
+    );
+  }
+  
+  toggleTaskStatus(taskId) {
+    // Invalidate specific task cache and task lists
+    this.invalidateCache(`task_${taskId}`);
+    this.invalidateCache((key) => key.startsWith('tasks_'));
+    
+    return this.enqueueRequest(() =>
+      apiClient.patch(`/tasks/${taskId}/toggle`)
+    );
+  }
+  
+  // Bulk operations with optimized handling
+  bulkUpdateTasks(taskIds, updateData) {
+    // Invalidate all affected task caches and task lists
+    taskIds.forEach(id => {
       this.invalidateCache(`task_${id}`);
-      this.invalidateCache(); // Invalidate task lists
-      return response;
     });
+    this.invalidateCache((key) => key.startsWith('tasks_'));
+    
+    return this.enqueueRequest(() =>
+      apiClient.put('/tasks/bulk-update', { taskIds, updateData })
+    , 'high');
   }
   
-  deleteTask(id) {
-    return this.enqueueRequest(() => 
-      apiClient.delete(`/tasks/${id}`)
-    ).then(response => {
+  bulkDeleteTasks(taskIds) {
+    // Invalidate all affected task caches and task lists
+    taskIds.forEach(id => {
       this.invalidateCache(`task_${id}`);
-      this.invalidateCache(); // Invalidate task lists
-      return response;
     });
+    this.invalidateCache((key) => key.startsWith('tasks_'));
+    
+    return this.enqueueRequest(() =>
+      apiClient.delete('/tasks/bulk-delete', { data: { taskIds } })
+    , 'high');
   }
   
-  toggleTaskStatus(id) {
-    return this.enqueueRequest(() => 
-      apiClient.patch(`/tasks/${id}/toggle`)
-    ).then(response => {
-      this.invalidateCache(`task_${id}`);
-      this.invalidateCache(); // Invalidate task lists
-      return response;
+  // Search tasks with debounced caching
+  searchTasks(searchTerm, filters = {}) {
+    const queryParams = new URLSearchParams();
+    queryParams.append('search', searchTerm);
+    
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined) {
+        queryParams.append(key, value);
+      }
     });
+    
+    const queryString = queryParams.toString();
+    const cacheKey = `search_${queryString}`;
+    
+    // Very short expiry for search results
+    return this.getCachedData(cacheKey, () => 
+      apiClient.get(`/tasks/search?${queryString}`)
+    , { shortCache: true });
   }
   
-  bulkDeleteTasks(ids) {
-    return this.enqueueRequest(() => 
-      apiClient.post('/tasks/bulk-delete', { ids })
-    ).then(response => {
-      this.invalidateCache(); // Invalidate all task-related caches
-      return response;
-    });
-  }
-  
-  bulkUpdateTasks(tasks) {
-    return this.enqueueRequest(() => 
-      apiClient.post('/tasks/bulk-update', { tasks })
-    ).then(response => {
-      this.invalidateCache(); // Invalidate all task-related caches
-      return response;
-    });
+  // Get task statistics with longer cache
+  getTaskStats() {
+    return this.getCachedData('task_stats', () =>
+      apiClient.get('/tasks/stats')
+    , { longCache: true });
   }
 }
 
-// Auth API endpoints
+// Authentication API with token management
 class AuthAPI {
-    constructor() {
-      this.requestInProgress = false;
-      this.concurrentRequests = new Map();
-    }
-    
-    async login(credentials) {
-      try {
-        const response = await apiClient.post('/auth/login', credentials);
-        
-        if (response.token) {
-          localStorage.setItem('authToken', response.token);
-        }
-        
-        if (response.refreshToken) {
-          localStorage.setItem('refreshToken', response.refreshToken);
-        }
-        
-        return response;
-      } catch (error) {
-        console.error('Login error:', error);
-        throw error;
-      }
-    }
-    
-    async register(userData) {
-      try {
-        console.log('Attempting to register user at:', `${apiClient.defaults.baseURL}/api/users`);
-        console.log('User data:', userData);
-        const response = await apiClient.post('/api/users', userData);
-        console.log('Registration response:', response);
-        return response;
-      } catch (error) {
-        console.error('Registration error:', error.response ? error.response.data : error.message);
-        throw error;
-      }
-    }
-    
-    async logout() {
-      try {
-        // Only attempt to revoke token on server if we have a token
-        const token = localStorage.getItem('authToken');
-        if (token) {
-          await apiClient.post('/users/logout');
-        }
-        
-        // Clear local storage regardless of server response
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('refreshToken');
-        
-        return { success: true };
-      } catch (error) {
-        // Still clear tokens even if server request fails
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('refreshToken');
-        
-        console.error('Logout error:', error);
-        return { success: true, error };
-      }
-    }
-    
-    async refreshToken() {
-      // Prevent multiple concurrent refresh requests
-      if (this.requestInProgress) {
-        // Return existing promise if there's already a request in progress
-        if (!this.concurrentRequests.has('refreshToken')) {
-          this.concurrentRequests.set('refreshToken', new Promise((resolve, reject) => {
-            const interval = setInterval(() => {
-              if (!this.requestInProgress) {
-                clearInterval(interval);
-                const token = localStorage.getItem('authToken');
-                if (token) {
-                  resolve({ token });
-                } else {
-                  reject(new Error('Token refresh failed'));
-                }
-              }
-            }, 100);
-          }));
-        }
-        
-        return this.concurrentRequests.get('refreshToken');
-      }
-      
-      this.requestInProgress = true;
-      
-      try {
-        const refreshToken = localStorage.getItem('refreshToken');
-        if (!refreshToken) {
-          throw new Error('No refresh token available');
-        }
-        
-        const response = await apiClient.post('/auth/refresh', { refreshToken });
-        
-        if (response.token) {
-          localStorage.setItem('authToken', response.token);
-        }
-        
-        if (response.refreshToken) {
-          localStorage.setItem('refreshToken', response.refreshToken);
-        }
-        
-        return response;
-      } catch (error) {
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('refreshToken');
-        console.error('Token refresh error:', error);
-        throw error;
-      } finally {
-        this.requestInProgress = false;
-        this.concurrentRequests.delete('refreshToken');
-      }
-    }
-    
-    isAuthenticated() {
-      return localStorage.getItem('authToken') !== null;
-    }
+  login(credentials) {
+    return login(credentials);
   }
   
-const authAPI = new AuthAPI();
-  
-
-// User profile and settings API
-class UserAPI {
-  async getProfile() {
-    try {
-      return await apiClient.get('/users/profile');
-    } catch (error) {
-      console.error('Get profile error:', error);
-      throw error;
-    }
+  register(userData) {
+    return apiClient.post('/auth/register', userData);
   }
   
-  async updateProfile(profileData) {
-    try {
-      return await apiClient.put('/users/profile', profileData);
-    } catch (error) {
-      console.error('Update profile error:', error);
-      throw error;
-    }
+  logout() {
+    return logout();
   }
   
-  async updateSettings(settings) {
-    try {
-      return await apiClient.put('/users/settings', settings);
-    } catch (error) {
-      console.error('Update settings error:', error);
-      throw error;
-    }
+  forgotPassword(email) {
+    return apiClient.post('/auth/forgot-password', { email });
   }
   
-  async changePassword(passwordData) {
-    try {
-      return await apiClient.post('/users/change-password', passwordData);
-    } catch (error) {
-      console.error('Change password error:', error);
-      throw error;
-    }
+  validateResetToken(token) {
+    return apiClient.get(`/auth/reset-password/${token}`);
   }
-}
-
-// Stats API for analytics
-class StatsAPI {
-  async getTaskStats(params = {}) {
-    try {
-      const queryParams = new URLSearchParams();
-      
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined) {
-          queryParams.append(key, value);
+  
+  resetPassword(token, newPassword) {
+    return apiClient.post('/auth/reset-password', { token, newPassword });
+  }
+  
+  refreshToken() {
+    const refreshToken = localStorage.getItem('refreshToken');
+    
+    if (!refreshToken) {
+      return Promise.reject(new Error('No refresh token available'));
+    }
+    
+    return apiClient.post('/auth/refresh', { refreshToken })
+      .then(data => {
+        if (data.token) {
+          localStorage.setItem('authToken', data.token);
         }
+        if (data.refreshToken) {
+          localStorage.setItem('refreshToken', data.refreshToken);
+        }
+        return data;
       });
-      
-      const queryString = queryParams.toString();
-      return await apiClient.get(`/stats/tasks?${queryString}`);
-    } catch (error) {
-      console.error('Get task stats error:', error);
-      throw error;
-    }
+  }
+  
+  // Check if the user is authenticated
+  isAuthenticated() {
+    return isAuthenticated();
+  }
+  
+  // Get current user ID
+  getCurrentUserId() {
+    return getCurrentUserId();
   }
 }
 
-// Create instances
-const taskAPI = new TaskAPI();
-
-const userAPI = new UserAPI();
-const statsAPI = new StatsAPI();
-
-// Combine all APIs
-const api = {
-  // Task management
-  getTasks: params => taskAPI.getTasks(params),
-  getTaskById: id => taskAPI.getTaskById(id),
-  createTask: data => taskAPI.createTask(data),
-  updateTask: (id, data) => taskAPI.updateTask(id, data),
-  deleteTask: id => taskAPI.deleteTask(id),
-  toggleTaskStatus: id => taskAPI.toggleTaskStatus(id),
-  bulkDeleteTasks: ids => taskAPI.bulkDeleteTasks(ids),
-  bulkUpdateTasks: tasks => taskAPI.bulkUpdateTasks(tasks),
-  invalidateTaskCache: key => taskAPI.invalidateCache(key),
-  
-  // Authentication
-  login: credentials => authAPI.login(credentials),
-  register: userData => authAPI.register(userData),
-  logout: () => authAPI.logout(),
-  refreshToken: () => authAPI.refreshToken(),
-  isAuthenticated: () => authAPI.isAuthenticated(),
-  
-  // User profile and settings
-  getProfile: () => userAPI.getProfile(),
-  updateProfile: data => userAPI.updateProfile(data),
-  updateSettings: settings => userAPI.updateSettings(settings),
-  changePassword: data => userAPI.changePassword(data),
-  
-  // Analytics and stats
-  getTaskStats: params => statsAPI.getTaskStats(params),
-  
-  // Direct access to API instances (for advanced usage)
-  instances: {
-    taskAPI,
-    authAPI,
-    userAPI,
-    statsAPI
-  },
-  
-  // Connection management
-  setBaseURL: url => {
-    apiClient.defaults.baseURL = url;
-  },
-  setTimeout: timeout => {
-    apiClient.defaults.timeout = timeout;
-  },
-  
-  // Debug helpers
-  clearAllCaches: () => {
-    taskAPI.invalidateCache();
+// User API for profile management
+class UserAPI {
+  getProfile() {
+    return this.getCachedData('user_profile', () =>
+      apiClient.get('/user/profile')
+    );
   }
+  
+  updateProfile(userData) {
+    this.invalidateCache('user_profile');
+    
+    return apiClient.put('/user/profile', userData);
+  }
+  
+  changePassword(passwordData) {
+    return apiClient.put('/user/password', passwordData);
+  }
+  
+  // Inherit caching methods from TaskAPI
+  getCachedData(key, fetchFn, options = {}) {
+    return taskApi.getCachedData(key, fetchFn, options);
+  }
+  
+  invalidateCache(key = null) {
+    return taskApi.invalidateCache(key);
+  }
+}
+
+// Create instances of the API classes
+const taskApi = new TaskAPI();
+const authApi = new AuthAPI();
+const userApi = new UserAPI();
+
+// Create a consolidated API object that includes utility functions
+const api = {
+  tasks: taskApi,
+  auth: authApi,
+  user: userApi,
+  // Add utility functions at the top level for convenience
+  isAuthenticated,
+  getCurrentUserId,
+  login,
+  logout
 };
 
+// Export the API instances and client
+export {
+  apiClient,
+  taskApi,
+  authApi,
+  userApi,
+  isAuthenticated,
+  getCurrentUserId
+};
+
+// Default export for convenience
 export default api;

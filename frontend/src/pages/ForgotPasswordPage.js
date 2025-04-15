@@ -2,182 +2,221 @@ import React, { useState, useEffect } from 'react';
 import { Link, useParams, useHistory, useLocation } from 'react-router-dom';
 import api from '../services/api';
 
+// Define support email centrally
+const SUPPORT_EMAIL = 'lingamvamshikrishnareddy@gmail.com';
+
+// Helper component for the support link
+const ContactSupportLink = () => (
+  <p>
+    Having trouble? <a href={`mailto:${SUPPORT_EMAIL}`}>Contact Support</a>
+  </p>
+);
+
 const PasswordResetPage = () => {
-  // States for both forgot password and reset password functionality
+  // --- States remain the same ---
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [tokenValid, setTokenValid] = useState(null);
-  const [validating, setValidating] = useState(false);
-  
-  // Get token from URL params if available
+  const [tokenValid, setTokenValid] = useState(null); // null: initial, true: valid, false: invalid
+  const [validating, setValidating] = useState(false); // Renamed for clarity
+
+  // --- Hooks remain the same ---
   const { token } = useParams();
   const history = useHistory();
-  const location = useLocation();
-  
+  const location = useLocation(); // Kept in case needed later, though not directly used in logic now
+
   // Determine which view to show based on token presence
   const isResetView = !!token;
-  
-  // Validate token on component mount if in reset view
+
+  // --- useEffect for token validation remains the same ---
   useEffect(() => {
+    // Only run if we are in the reset view (token exists)
     if (isResetView) {
       const validateToken = async () => {
+        setValidating(true); // Start validating
+        setError(null); // Clear previous errors
+        setTokenValid(null); // Reset validation status
+
         try {
-          setValidating(true);
+          // Assume api.validateResetToken throws an error for invalid tokens
           await api.validateResetToken(token);
-          setTokenValid(true);
+          setTokenValid(true); // Token is valid
         } catch (err) {
-          setTokenValid(false);
-          setError('This password reset link is invalid or has expired.');
+          console.error('Token validation error:', err);
+          setTokenValid(false); // Token is invalid
+          // Provide a user-friendly error message
+          setError(err.response?.data?.message || err.message || 'This password reset link is invalid or has expired.');
         } finally {
-          setValidating(false);
+          setValidating(false); // Stop validating
         }
       };
-      
+
       validateToken();
+    } else {
+        // If not in reset view, ensure validation state is off
+        setValidating(false);
+        setTokenValid(null);
     }
+    // Dependency array ensures this runs when `token` or `isResetView` changes
   }, [token, isResetView]);
-  
-  // Handle forgot password submit
+
+  // --- Event Handlers remain mostly the same, added error logging ---
   const handleForgotSubmit = async (e) => {
     e.preventDefault();
-    
+    setError(null); // Clear previous errors
+    setSuccess(false); // Reset success state
+    setLoading(true);
+
+    if (!email.trim()) {
+      setError('Email is required');
+      setLoading(false);
+      return; // Stop execution if validation fails
+    }
+
     try {
-      setError(null);
-      setLoading(true);
-      
-      // Client-side validation
-      if (!email.trim()) {
-        throw new Error('Email is required');
-      }
-      
-      // Call API to send password reset email
       await api.forgotPassword({ email });
-      
-      // Show success message
-      setSuccess(true);
-      setEmail('');
+      setSuccess(true); // Show success message
+      setEmail(''); // Clear the email field
     } catch (err) {
-      // Extract error message
-      const errorMessage = err.message || 'Failed to process your request. Please try again.';
-      setError(errorMessage);
       console.error('Forgot password error:', err);
+      const errorMessage = err.response?.data?.message || err.message || 'Failed to process your request. Please try again.';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
   };
-  
-  // Handle reset password submit
+
   const handleResetSubmit = async (e) => {
     e.preventDefault();
-    
+    setError(null); // Clear previous errors
+    setSuccess(false); // Reset success state
+    setLoading(true);
+
+    // Client-side validation
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters long');
+      setLoading(false);
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      setLoading(false);
+      return;
+    }
+
     try {
-      setError(null);
-      setLoading(true);
-      
-      // Client-side validation
-      if (password.length < 8) {
-        throw new Error('Password must be at least 8 characters long');
-      }
-      
-      if (password !== confirmPassword) {
-        throw new Error('Passwords do not match');
-      }
-      
-      // Call API to reset password
       await api.resetPassword({ token, password });
-      
-      // Show success message
-      setSuccess(true);
-      
-      // Clear form
+      setSuccess(true); // Show success message
+      // Clear form fields
       setPassword('');
       setConfirmPassword('');
-      
-      // Redirect to login after 3 seconds
+
+      // Redirect to login after a delay
       setTimeout(() => {
         history.push('/login');
-      }, 3000);
+      }, 3000); // 3-second delay
+
     } catch (err) {
-      // Extract error message
-      const errorMessage = err.message || 'Failed to reset password. Please try again.';
-      setError(errorMessage);
       console.error('Reset password error:', err);
+      const errorMessage = err.response?.data?.message || err.message || 'Failed to reset password. Please try again.';
+      setError(errorMessage);
+       // Check if the error indicates the token is now invalid (e.g., expired after page load)
+      if (err.response?.status === 400 || err.message.toLowerCase().includes('token')) {
+         setTokenValid(false); // Mark token as invalid based on API response
+      }
     } finally {
       setLoading(false);
     }
   };
-  
-  // Show loading state while validating token
+
+  // --- Render Logic ---
+
+  // 1. Show loading state while validating token
   if (isResetView && validating) {
     return (
       <div className="container auth-container">
         <div className="card auth-card">
           <h1 className="auth-title">Reset Password</h1>
           <div className="loading-state">
-            <p>Validating your request...</p>
+            <p>Validating your password reset link...</p>
+            {/* Optional: Add a spinner animation here */}
           </div>
         </div>
       </div>
     );
   }
-  
-  // Show error if token is invalid
-  if (isResetView && !tokenValid && !validating) {
+
+  // 2. Show error view if token is invalid (and not validating)
+  // Use `tokenValid === false` for explicit invalid state check
+  if (isResetView && tokenValid === false && !validating) {
     return (
       <div className="container auth-container">
         <div className="card auth-card">
           <h1 className="auth-title">Reset Password</h1>
-          <div className="error-message">
-            <p>{error}</p>
-          </div>
+          {error && ( // Show the specific error message
+            <div className="error-message">
+              <p>{error}</p>
+            </div>
+          )}
           <div className="auth-footer">
-            <p>Need to reset your password? <Link to="/forgot-password">Request a new link</Link></p>
-            <p>Or return to <Link to="/login">Login</Link></p>
+            <p>Need to reset your password again? <Link to="/forgot-password">Request a new link</Link>.</p>
+            <ContactSupportLink /> {/* Added Contact Support Link */}
+            <p>Or return to <Link to="/login">Login</Link>.</p>
           </div>
         </div>
       </div>
     );
   }
-  
+
+  // 3. Main View (Forgot Password or Reset Password Form/Success)
   return (
     <div className="container auth-container">
       <div className="card auth-card">
-        <h1 className="auth-title">{isResetView ? 'Reset Password' : 'Forgot Password'}</h1>
-        
-        {error && (
-          <div className="error-message">
-            <p>{error}</p>
-            <button onClick={() => setError(null)} className="dismiss-error">×</button>
-          </div>
+        <h1 className="auth-title">{isResetView ? 'Set New Password' : 'Forgot Password'}</h1>
+
+        {/* General Error Display Area (for API errors during submit, etc.) */}
+        {error && !success && ( // Only show submit errors if not in success state
+            <div className="error-message">
+                <p>{error}</p>
+                <button onClick={() => setError(null)} className="dismiss-error" aria-label="Dismiss error">×</button>
+                {/* Also offer support for general errors */}
+                <ContactSupportLink />
+            </div>
         )}
-        
+
+        {/* Success Message Area */}
         {success ? (
           <div className="success-container">
             <div className="success-message">
               {isResetView ? (
                 <>
-                  <p>Your password has been successfully reset!</p>
-                  <p>You will be redirected to the login page in a few seconds...</p>
+                  <p>✅ Your password has been successfully reset!</p>
+                  <p>Redirecting you to the login page shortly...</p>
                 </>
               ) : (
                 <>
-                  <p>Password reset instructions have been sent to your email.</p>
-                  <p>Please check your inbox and follow the instructions to reset your password.</p>
+                  <p>✅ Password reset instructions sent!</p>
+                  <p>Please check your email ({email || 'provided address'}) and follow the link to reset your password.</p>
                 </>
               )}
             </div>
             <div className="auth-footer">
               <p><Link to="/login">Return to Login</Link></p>
+              {/* Optional: Add support link here too if desired */}
+              {/* <ContactSupportLink /> */}
             </div>
           </div>
         ) : (
           <>
-            {isResetView ? (
-              <form className="auth-form" onSubmit={handleResetSubmit}>
+            {/* Conditional Form Rendering */}
+            {isResetView && tokenValid === true ? ( // Show reset form only if token is validated
+              <form className="auth-form" onSubmit={handleResetSubmit} noValidate>
+                <p className="form-instructions">
+                  Please enter and confirm your new password below.
+                </p>
                 <div className="form-group">
                   <label htmlFor="password">New Password:</label>
                   <input
@@ -187,15 +226,17 @@ const PasswordResetPage = () => {
                     onChange={(e) => setPassword(e.target.value)}
                     disabled={loading}
                     className="form-input"
-                    placeholder="••••••••••••"
+                    placeholder="Enter new password"
                     required
+                    minLength={8} // HTML5 validation hint
+                    aria-describedby="password-hint" // Accessibility
                     autoFocus
                   />
-                  <small className="form-hint">Must be at least 8 characters long</small>
+                  <small id="password-hint" className="form-hint">Must be at least 8 characters long.</small>
                 </div>
-                
+
                 <div className="form-group">
-                  <label htmlFor="confirmPassword">Confirm Password:</label>
+                  <label htmlFor="confirmPassword">Confirm New Password:</label>
                   <input
                     id="confirmPassword"
                     type="password"
@@ -203,27 +244,32 @@ const PasswordResetPage = () => {
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     disabled={loading}
                     className="form-input"
-                    placeholder="••••••••••••"
+                    placeholder="Confirm new password"
                     required
+                    minLength={8}
                   />
                 </div>
-                
-                <button 
-                  className="button button-primary button-block" 
+
+                <button
+                  className="button button-primary button-block"
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || !password || !confirmPassword || password !== confirmPassword} // Basic button disable
                 >
-                  {loading ? 'Resetting Password...' : 'Reset Password'}
+                  {loading ? 'Resetting...' : 'Set New Password'}
                 </button>
+                 <div className="auth-footer">
+                     <ContactSupportLink /> {/* Added Contact Support Link */}
+                     <p><Link to="/login">Back to Login</Link></p>
+                 </div>
               </form>
-            ) : (
-              <form className="auth-form" onSubmit={handleForgotSubmit}>
+            ) : !isResetView ? ( // Show forgot form if not in reset view
+              <form className="auth-form" onSubmit={handleForgotSubmit} noValidate>
                 <p className="form-instructions">
-                  Enter your email address below and we'll send you instructions to reset your password.
+                  Enter your account's email address and we will send you a link to reset your password.
                 </p>
-                
+
                 <div className="form-group">
-                  <label htmlFor="email">Email:</label>
+                  <label htmlFor="email">Email Address:</label>
                   <input
                     id="email"
                     type="email"
@@ -231,25 +277,26 @@ const PasswordResetPage = () => {
                     onChange={(e) => setEmail(e.target.value)}
                     disabled={loading}
                     className="form-input"
-                    placeholder="your@email.com"
+                    placeholder="e.g., yourname@example.com"
                     required
                     autoFocus
                   />
                 </div>
-                
-                <button 
-                  className="button button-primary button-block" 
+
+                <button
+                  className="button button-primary button-block"
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || !email.trim()} // Disable if loading or email empty
                 >
-                  {loading ? 'Sending...' : 'Send Reset Instructions'}
+                  {loading ? 'Sending Link...' : 'Send Password Reset Link'}
                 </button>
-                
+
                 <div className="auth-footer">
-                  <p>Remember your password? <Link to="/login">Login</Link></p>
+                  <p>Remembered your password? <Link to="/login">Login here</Link></p>
+                  <ContactSupportLink /> {/* Added Contact Support Link */}
                 </div>
               </form>
-            )}
+            ) : null /* Should not happen if logic above is correct, but prevents rendering stale form */}
           </>
         )}
       </div>

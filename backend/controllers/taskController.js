@@ -244,11 +244,149 @@ const toggleTaskStatus = async (req, res) => {
   }
 };
 
+/**
+ * Bulk update multiple tasks
+ * @route PATCH /api/tasks/bulk
+ * @access Private
+ */
+const bulkUpdateTasks = async (req, res) => {
+  try {
+    const { taskIds, updates } = req.body;
+    
+    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ message: 'Task IDs array is required' });
+    }
+    
+    if (!updates || Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: 'Updates object is required' });
+    }
+    
+    // Filter tasks that belong to the current user
+    const userFilter = req.user ? { user: req.user.id } : {};
+    
+    // Perform the bulk update
+    const updateResult = await Task.updateMany(
+      { _id: { $in: taskIds }, ...userFilter },
+      { $set: { ...updates, updatedAt: Date.now() } }
+    );
+    
+    res.json({
+      message: 'Tasks updated successfully',
+      modifiedCount: updateResult.modifiedCount,
+      taskIds
+    });
+  } catch (error) {
+    console.error('Error bulk updating tasks:', error);
+    res.status(500).json({ message: 'Failed to update tasks', error: error.message });
+  }
+};
+
+/**
+ * Bulk delete multiple tasks
+ * @route DELETE /api/tasks/bulk
+ * @access Private
+ */
+const bulkDeleteTasks = async (req, res) => {
+  try {
+    const { taskIds } = req.body;
+    
+    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ message: 'Task IDs array is required' });
+    }
+    
+    // Filter tasks that belong to the current user
+    const userFilter = req.user ? { user: req.user.id } : {};
+    
+    // Perform the bulk delete
+    const deleteResult = await Task.deleteMany({
+      _id: { $in: taskIds },
+      ...userFilter
+    });
+    
+    res.json({
+      message: 'Tasks deleted successfully',
+      deletedCount: deleteResult.deletedCount,
+      taskIds
+    });
+  } catch (error) {
+    console.error('Error bulk deleting tasks:', error);
+    res.status(500).json({ message: 'Failed to delete tasks', error: error.message });
+  }
+};
+
+/**
+ * Get task statistics for the current user
+ * @route GET /api/tasks/stats
+ * @access Private
+ */
+const getTaskStats = async (req, res) => {
+  try {
+    // Filter by user if authenticated
+    const userFilter = req.user ? { user: req.user.id } : {};
+    
+    // Get counts by status
+    const statusCounts = await Task.aggregate([
+      { $match: userFilter },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+    
+    // Get counts by category
+    const categoryCounts = await Task.aggregate([
+      { $match: { ...userFilter, category: { $exists: true, $ne: '' } } },
+      { $group: { _id: '$category', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 } // Get top 5 categories
+    ]);
+    
+    // Get counts by priority
+    const priorityCounts = await Task.aggregate([
+      { $match: userFilter },
+      { $group: { _id: '$priority', count: { $sum: 1 } } }
+    ]);
+    
+    // Get upcoming due tasks
+    const now = new Date();
+    const upcomingDue = await Task.find({
+      ...userFilter,
+      status: 'active',
+      dueDate: { $exists: true, $ne: null, $gte: now }
+    })
+    .sort({ dueDate: 1 })
+    .limit(5);
+    
+    // Format status counts
+    const stats = {
+      total: await Task.countDocuments(userFilter),
+      byStatus: statusCounts.reduce((acc, item) => {
+        acc[item._id || 'unspecified'] = item.count;
+        return acc;
+      }, {}),
+      byCategory: categoryCounts.reduce((acc, item) => {
+        acc[item._id || 'unspecified'] = item.count;
+        return acc;
+      }, {}),
+      byPriority: priorityCounts.reduce((acc, item) => {
+        acc[item._id || 'unspecified'] = item.count;
+        return acc;
+      }, {}),
+      upcomingDue
+    };
+    
+    res.json(stats);
+  } catch (error) {
+    console.error('Error getting task stats:', error);
+    res.status(500).json({ message: 'Failed to get task statistics', error: error.message });
+  }
+};
+
 module.exports = {
   getTasks,
   getTaskById,
   createTask,
   updateTask,
   deleteTask,
-  toggleTaskStatus
+  toggleTaskStatus,
+  bulkUpdateTasks,
+  bulkDeleteTasks,
+  getTaskStats
 };

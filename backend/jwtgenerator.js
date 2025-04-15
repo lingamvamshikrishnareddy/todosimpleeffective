@@ -1,7 +1,10 @@
 const crypto = require('crypto');
 
-// Generate a random JWT secret
+// Generate access token secret
 const JWT_SECRET = crypto.randomBytes(64).toString('hex');
+console.log('Access Token Secret:', JWT_SECRET);
 
-console.log('Your JWT Secret for testing:');
-console.log(JWT_SECRET);
+// Generate refresh token secret
+const JWT_REFRESH_SECRET = crypto.randomBytes(64).toString('hex');
+console.log('Refresh Token Secret:', JWT_REFRESH_SECRET);
+

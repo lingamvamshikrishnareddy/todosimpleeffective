@@ -1,8 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useHistory } from 'react-router-dom';
 import Task from '../components/Task';
 import { Helmet } from 'react-helmet';
 import api from '../services/api';
+import './TaskPage.css';
+
+// Number of ms to debounce task fetching
+const DEBOUNCE_DELAY = 300;
 
 const TaskPage = () => {
   const [tasks, setTasks] = useState([]);
@@ -22,80 +26,124 @@ const TaskPage = () => {
   const [sortBy, setSortBy] = useState('createdAt:desc');
   const [userProfile, setUserProfile] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [isFetching, setIsFetching] = useState(false);
   const history = useHistory();
-  
-  // Get user profile on component mount
+
+  // Create a stable reference for the timeout
+  const timeoutRef = useRef(null);
+
+  // Get user profile on component mount with error handling
   useEffect(() => {
+    let isMounted = true;
+
     const getUserProfile = async () => {
       try {
-        const profile = await api.getProfile();
-        setUserProfile(profile);
+        const profile = await api.user.getProfile();
+        if (isMounted) {
+          setUserProfile(profile);
+        }
       } catch (err) {
         console.error('Error fetching user profile:', err);
+        if (isMounted && (err.status === 401 || err.message?.includes('unauthorized'))) {
+          history.push('/login');
+        }
       }
     };
-    
+
     getUserProfile();
-  }, []);
-  
-  // Convert filter to API status
-  const getStatusFromFilter = () => {
+
+    return () => {
+      isMounted = false;
+    };
+  }, [history]);
+
+  // Convert filter to API status - memoize function
+  const getStatusFromFilter = useCallback(() => {
     if (filter === 'completed') return 'completed';
     if (filter === 'active') return 'active';
     return '';
-  };
+  }, [filter]);
 
-  // Fetch tasks with current filters
-  const fetchTasks = useCallback(async () => {
+  // Create memoized query parameters for fetchTasks to prevent unnecessary re-renders
+  const queryParams = useMemo(() => ({
+    page,
+    limit: 10,
+    status: getStatusFromFilter(),
+    category: category || undefined,
+    search: searchQuery || undefined,
+    sortBy,
+    priority: priority || undefined,
+    dueDate: dueDate || undefined
+  }), [page, getStatusFromFilter, category, searchQuery, sortBy, priority, dueDate]);
+
+  // Memoize the fetch function without the timeout logic
+  const executeFetch = useCallback(async () => {
+    if (isFetching) return;
+
     try {
+      setIsFetching(true);
       setLoading(true);
       setError(null);
-      
-      const response = await api.getTasks({
-        page,
-        limit: 10,
-        status: getStatusFromFilter(),
-        category: category || undefined,
-        search: searchQuery || undefined,
-        sortBy,
-        priority: priority || undefined,
-        dueDate: dueDate || undefined
-      });
-      
-      setTasks(response.tasks);
-      setTotalPages(response.pagination.pages);
-      setLoading(false);
+
+      const response = await api.tasks.getTasks(queryParams);
+
+      setTasks(response.tasks || []);
+      setTotalPages(response.pagination?.pages || 1);
     } catch (err) {
-      setError('Failed to load tasks. Please try again.');
-      setLoading(false);
+      if (err.status === 429) {
+        setError('Too many requests. Please try again in a moment.');
+      } else if (err.status === 401) {
+        history.push('/login');
+      } else {
+        setError('Failed to load tasks. Please try again.');
+      }
       console.error('Error fetching tasks:', err);
+    } finally {
+      setLoading(false);
+      setIsFetching(false);
     }
-  }, [page, filter, category, searchQuery, sortBy, priority, dueDate]);
+  }, [queryParams, history, isFetching]);
 
-  // Load tasks when component mounts or filters change
+  // Handle the debounced fetch separately
   useEffect(() => {
-    fetchTasks();
-  }, [fetchTasks]);
+    // Clear any existing timeout first
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
 
+    // Set new timeout
+    timeoutRef.current = setTimeout(() => {
+      executeFetch();
+    }, DEBOUNCE_DELAY);
+
+    // Cleanup on unmount or when dependencies change
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [executeFetch]);
+
+  // Optimized task actions with error handling and retries
   const addTask = async () => {
     if (taskText.trim() === '') return;
-    
+
     try {
+      setError(null);
+
       if (isEditing) {
-        // Update existing task
-        await api.updateTask(currentTaskId, {
+        await api.tasks.updateTask(currentTaskId, {
           title: taskText,
           description: taskDescription,
           category,
           priority,
           dueDate: dueDate || undefined
         });
-        
+
         setIsEditing(false);
         setCurrentTaskId(null);
       } else {
-        // Add new task
-        await api.createTask({
+        await api.tasks.createTask({
           title: taskText,
           description: taskDescription,
           category,
@@ -103,29 +151,54 @@ const TaskPage = () => {
           dueDate: dueDate || undefined
         });
       }
-      
+
       // Reset form
       setTaskText('');
       setTaskDescription('');
       setCategory('');
       setPriority('');
       setDueDate('');
-      
+
       // Refresh task list
-      fetchTasks();
+      executeFetch();
     } catch (err) {
-      setError('Failed to save task. Please try again.');
+      const errorMessage = err.status === 429
+        ? 'Too many requests. Please try again in a moment.'
+        : 'Failed to save task. Please try again.';
+
+      setError(errorMessage);
       console.error('Error saving task:', err);
     }
   };
 
+  // Optimized delete with correct API call
   const deleteTask = async (taskId) => {
     try {
-      await api.deleteTask(taskId);
-      fetchTasks();
+      if (!taskId) {
+        console.error('Invalid task ID');
+        return;
+      }
+
+      // Optimistic UI update
+      const originalTasks = [...tasks];
+      setTasks(prevTasks => prevTasks.filter(task => (task._id || task.id) !== taskId));
+
+      try {
+        await api.tasks.deleteTask(taskId);
+      } catch (err) {
+        // Revert optimistic update on error
+        setTasks(originalTasks);
+
+        if (err.status === 429) {
+          setError('Too many requests. Please try again in a moment.');
+        } else {
+          setError('Failed to delete task. Please try again.');
+        }
+        console.error('Error deleting task:', err);
+      }
     } catch (err) {
       setError('Failed to delete task. Please try again.');
-      console.error('Error deleting task:', err);
+      console.error('Error in delete task operation:', err);
     }
   };
 
@@ -139,20 +212,49 @@ const TaskPage = () => {
     setDueDate(task.dueDate ? new Date(task.dueDate).toISOString().split('T')[0] : '');
   };
 
+  // Fixed toggle with correct API call
   const toggleComplete = async (taskId) => {
     try {
-      await api.toggleTaskStatus(taskId);
-      fetchTasks();
+      if (!taskId) {
+        console.error('Invalid task ID');
+        return;
+      }
+
+      // Optimistic update
+      const originalTasks = [...tasks];
+      setTasks(prevTasks => prevTasks.map(task => {
+        if ((task._id || task.id) === taskId) {
+          return {
+            ...task,
+            status: task.status === 'completed' ? 'active' : 'completed'
+          };
+        }
+        return task;
+      }));
+
+      try {
+        await api.tasks.toggleTaskStatus(taskId);
+      } catch (err) {
+        // Revert optimistic update on error
+        setTasks(originalTasks);
+
+        if (err.status === 429) {
+          setError('Too many requests. Please try again in a moment.');
+        } else {
+          setError('Failed to update task status. Please try again.');
+        }
+        console.error('Error updating task status:', err);
+      }
     } catch (err) {
       setError('Failed to update task status. Please try again.');
-      console.error('Error updating task status:', err);
+      console.error('Error in toggle complete operation:', err);
     }
   };
 
   const handleSearch = (e) => {
     e.preventDefault();
     setPage(1); // Reset to first page when searching
-    fetchTasks();
+    executeFetch();
   };
 
   const handleClearFilters = () => {
@@ -170,12 +272,12 @@ const TaskPage = () => {
       setPage(newPage);
     }
   };
-  
-  // Handle logout
+
+  // Fixed logout with correct API call
   const handleLogout = async () => {
     try {
       setLoggingOut(true);
-      await api.logout();
+      await api.auth.logout();
       history.push('/login');
     } catch (err) {
       setError('Logout failed. Please try again.');
@@ -184,48 +286,60 @@ const TaskPage = () => {
     }
   };
 
+  // Memoize active tasks count to avoid recalculation on every render
+  const activeTaskCount = useMemo(() => {
+    return tasks.filter(task => task.status !== 'completed').length;
+  }, [tasks]);
+
   return (
     <>
       <Helmet>
         <title>TaskFlow - Manage Your Tasks</title>
         <meta name="description" content="Create, organize, and track your tasks efficiently with TaskFlow." />
       </Helmet>
-      
+
       <div className="container">
         <div className="header task-header">
-          <h1>TaskFlow</h1>
-          
+          <div className="logo-section">
+            <h1 className="app-logo">TaskFlow</h1>
+          </div>
+
           {/* User profile and logout section */}
           <div className="user-controls">
             {userProfile && (
               <div className="user-info">
                 <span className="welcome-text">Welcome, {userProfile.name}</span>
                 <div className="user-actions">
-                  <a href="/profile" className="profile-link">My Profile</a>
-                  <button 
+                  <a href="/profile" className="profile-link">
+                    <i className="fa fa-user-circle"></i> My Profile
+                  </a>
+                  <button
                     className="logout-button"
                     onClick={handleLogout}
                     disabled={loggingOut}
                   >
-                    {loggingOut ? 'Logging out...' : 'Logout'}
+                    <i className="fa fa-sign-out"></i> {loggingOut ? 'Logging out...' : 'Logout'}
                   </button>
                 </div>
               </div>
             )}
           </div>
         </div>
-        
+
         <h1 className="page-title">Task Management</h1>
-        
+
         {error && (
           <div className="error-message">
-            <p>{error}</p>
+            <p><i className="fa fa-exclamation-circle"></i> {error}</p>
             <button onClick={() => setError(null)}>Dismiss</button>
           </div>
         )}
-        
+
+        {/* Task Form */}
         <div className="card task-form-card">
-          <h2>{isEditing ? 'Edit Task' : 'Add New Task'}</h2>
+          <h2 className="card-title">
+            <i className="fa fa-tasks"></i> {isEditing ? 'Edit Task' : 'Add New Task'}
+          </h2>
           <div className="form-group">
             <label htmlFor="taskTitle">Task Title:</label>
             <input
@@ -238,7 +352,7 @@ const TaskPage = () => {
               required
             />
           </div>
-          
+
           <div className="form-group">
             <label htmlFor="taskDescription">Description (optional):</label>
             <textarea
@@ -250,10 +364,12 @@ const TaskPage = () => {
               rows="3"
             />
           </div>
-          
+
           <div className="form-row">
             <div className="form-group half-width">
-              <label htmlFor="taskCategory">Category:</label>
+              <label htmlFor="taskCategory">
+                <i className="fa fa-tag"></i> Category:
+              </label>
               <input
                 id="taskCategory"
                 type="text"
@@ -263,9 +379,11 @@ const TaskPage = () => {
                 className="form-input"
               />
             </div>
-            
+
             <div className="form-group half-width">
-              <label htmlFor="taskPriority">Priority:</label>
+              <label htmlFor="taskPriority">
+                <i className="fa fa-flag"></i> Priority:
+              </label>
               <select
                 id="taskPriority"
                 value={priority}
@@ -279,9 +397,11 @@ const TaskPage = () => {
               </select>
             </div>
           </div>
-          
+
           <div className="form-group">
-            <label htmlFor="taskDueDate">Due Date (optional):</label>
+            <label htmlFor="taskDueDate">
+              <i className="fa fa-calendar"></i> Due Date (optional):
+            </label>
             <input
               id="taskDueDate"
               type="date"
@@ -290,14 +410,18 @@ const TaskPage = () => {
               className="form-input"
             />
           </div>
-          
+
           <div className="button-group">
-            <button className="button" onClick={addTask}>
-              {isEditing ? 'Update Task' : 'Add Task'}
+            <button
+              className="button primary-button"
+              onClick={addTask}
+              disabled={!taskText.trim()}
+            >
+              <i className="fa fa-plus-circle"></i> {isEditing ? 'Update Task' : 'Add Task'}
             </button>
             {isEditing && (
-              <button 
-                className="button button-secondary" 
+              <button
+                className="button secondary-button"
                 onClick={() => {
                   setIsEditing(false);
                   setTaskText('');
@@ -307,119 +431,144 @@ const TaskPage = () => {
                   setDueDate('');
                 }}
               >
-                Cancel
+                <i className="fa fa-times-circle"></i> Cancel
               </button>
             )}
           </div>
         </div>
-        
+
+        {/* Filters UI */}
         <div className="task-filters-container">
           <div className="task-search">
             <form onSubmit={handleSearch}>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search tasks..."
-                className="search-input"
-              />
-              <button type="submit" className="search-button">Search</button>
+              <div className="search-input-container">
+                <i className="fa fa-search search-icon"></i>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search tasks..."
+                  className="search-input"
+                />
+                <button type="submit" className="search-button" disabled={isFetching}>
+                  {isFetching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
             </form>
           </div>
-          
-          <div className="task-filter">
-            <span>Status: </span>
-            <button 
-              className={`filter-button ${filter === 'all' ? 'active' : ''}`} 
-              onClick={() => setFilter('all')}
+
+          <div className="filter-controls">
+            <div className="task-filter">
+              <span className="filter-label">Status: </span>
+              <div className="button-group">
+                <button
+                  className={`filter-button ${filter === 'all' ? 'active' : ''}`}
+                  onClick={() => setFilter('all')}
+                  disabled={isFetching}
+                >
+                  All
+                </button>
+                <button
+                  className={`filter-button ${filter === 'active' ? 'active' : ''}`}
+                  onClick={() => setFilter('active')}
+                  disabled={isFetching}
+                >
+                  <i className="fa fa-circle-o"></i> Active
+                </button>
+                <button
+                  className={`filter-button ${filter === 'completed' ? 'active' : ''}`}
+                  onClick={() => setFilter('completed')}
+                  disabled={isFetching}
+                >
+                  <i className="fa fa-check-circle"></i> Completed
+                </button>
+              </div>
+            </div>
+
+            <div className="task-sort">
+              <label htmlFor="sortTasks" className="sort-label">
+                <i className="fa fa-sort"></i> Sort by:
+              </label>
+              <select
+                id="sortTasks"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="sort-select"
+                disabled={isFetching}
+              >
+                <option value="createdAt:desc">Newest First</option>
+                <option value="createdAt:asc">Oldest First</option>
+                <option value="dueDate:asc">Due Date (Soon First)</option>
+                <option value="title:asc">Title (A-Z)</option>
+                <option value="priority:desc">Priority (High-Low)</option>
+              </select>
+            </div>
+
+            <button
+              className="clear-filters-button"
+              onClick={handleClearFilters}
+              disabled={isFetching}
             >
-              All
-            </button>
-            <button 
-              className={`filter-button ${filter === 'active' ? 'active' : ''}`} 
-              onClick={() => setFilter('active')}
-            >
-              Active
-            </button>
-            <button 
-              className={`filter-button ${filter === 'completed' ? 'active' : ''}`} 
-              onClick={() => setFilter('completed')}
-            >
-              Completed
+              <i className="fa fa-refresh"></i> Clear Filters
             </button>
           </div>
-          
-          <div className="task-sort">
-            <label htmlFor="sortTasks">Sort by: </label>
-            <select
-              id="sortTasks"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="sort-select"
-            >
-              <option value="createdAt:desc">Newest First</option>
-              <option value="createdAt:asc">Oldest First</option>
-              <option value="dueDate:asc">Due Date (Soon First)</option>
-              <option value="title:asc">Title (A-Z)</option>
-              <option value="priority:desc">Priority (High-Low)</option>
-            </select>
-          </div>
-          
-          <button 
-            className="clear-filters-button" 
-            onClick={handleClearFilters}
-          >
-            Clear Filters
-          </button>
         </div>
-        
+
+        {/* Loading and Empty States */}
         {loading ? (
           <div className="loading-state">
+            <div className="spinner"></div>
             <p>Loading tasks...</p>
           </div>
         ) : (
-          <div className="task-list">
+          <div className="task-list-container">
             {tasks.length > 0 ? (
-              tasks.map((task) => (
-                <Task 
-                  key={task._id || task.id} 
-                  task={task} 
-                  onDelete={deleteTask} 
-                  onEdit={editTask}
-                  onToggleComplete={toggleComplete}
-                />
-              ))
+              <div className="task-list">
+                {tasks.map((task) => (
+                  <Task
+                    key={task._id || task.id}
+                    task={task}
+                    onDelete={deleteTask}
+                    onEdit={editTask}
+                    onToggleComplete={toggleComplete}
+                  />
+                ))}
+              </div>
             ) : (
               <div className="empty-state">
-                <p>No {filter !== 'all' ? filter : ''} tasks found. {filter === 'all' ? 'Start by adding a task above!' : ''}</p>
+                <i className="fa fa-clipboard empty-icon"></i>
+                <p className="empty-message">No {filter !== 'all' ? filter : ''} tasks found.</p>
+                <p className="empty-action">{filter === 'all' ? 'Start by adding a task above!' : 'Try changing your filters or adding a new task.'}</p>
               </div>
             )}
           </div>
         )}
-        
+
+        {/* Pagination */}
         {tasks.length > 0 && (
           <div className="pagination">
-            <button 
-              disabled={page === 1} 
+            <button
+              disabled={page === 1 || isFetching}
               onClick={() => handlePageChange(page - 1)}
               className="pagination-button"
             >
-              Previous
+              <i className="fa fa-chevron-left"></i> Previous
             </button>
             <span className="pagination-info">Page {page} of {totalPages}</span>
-            <button 
-              disabled={page === totalPages} 
+            <button
+              disabled={page === totalPages || isFetching}
               onClick={() => handlePageChange(page + 1)}
               className="pagination-button"
             >
-              Next
+              Next <i className="fa fa-chevron-right"></i>
             </button>
           </div>
         )}
-        
+
+        {/* Task Summary */}
         {tasks.length > 0 && (
           <div className="task-summary">
-            <p>{tasks.filter(task => task.status !== 'completed').length} tasks remaining</p>
+            <p><i className="fa fa-list-ul"></i> {activeTaskCount} tasks remaining</p>
           </div>
         )}
       </div>
@@ -427,4 +576,4 @@ const TaskPage = () => {
   );
 };
 
-export default TaskPage;
+export default React.memo(TaskPage);

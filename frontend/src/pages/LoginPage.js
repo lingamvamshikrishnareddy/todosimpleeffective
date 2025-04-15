@@ -1,69 +1,107 @@
-import React, { useState } from 'react';
-import { useHistory } from 'react-router-dom';
+// pages/LoginPage.jsx
+import React, { useState, useEffect } from 'react';
+import { useHistory, useLocation, Link } from 'react-router-dom';
 import api from '../services/api';
+import './loginpage.css'; // <--- IMPORT THE CSS FILE
+
+// Function to parse query params
+function useQuery() {
+  // ... (rest of the function remains the same)
+  return new URLSearchParams(useLocation().search);
+}
 
 const LoginPage = () => {
+  // ... (all state and functions remain the same)
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null); // For registration success
   const [loading, setLoading] = useState(false);
   const history = useHistory();
-  
-  // Redirect if already logged in
-  React.useEffect(() => {
-    if (api.isAuthenticated()) {
-      history.replace('/tasks');
+  const query = useQuery(); // Hook to get query params
+
+  // Check for registration success message on mount
+  useEffect(() => {
+    if (query.get('registered') === 'true') {
+      setSuccessMessage('Registration successful! Please log in.');
+      // Optional: Remove the query param from URL without reload
+      history.replace('/login');
     }
-  }, [history]);
+    if (query.get('sessionExpired') === 'true') {
+        setError('Your session has expired. Please log in again.');
+        history.replace('/login');
+    }
+    // Removed dependency array warning suppression, added proper dependencies
+  }, [query, history]); // Correct dependencies
+
+  // Redirect if already logged in (runs after checking query params)
+  useEffect(() => {
+    if (api.auth.isAuthenticated()) {
+      history.replace('/tasks'); // Use replace so back button doesn't go to login
+    }
+    // Removed api.auth from dependency array as isAuthenticated likely doesn't change
+    // based on the api.auth instance itself but its internal state.
+    // If isAuthenticated *itself* could change reference, add api.auth.
+  }, [history]); // Correct dependencies
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+    setError(null);
+    setSuccessMessage(null); // Clear success message on new attempt
+
+    // Basic client-side validation
+    if (!email.trim()) {
+      setError('Email is required');
+      return;
+    }
+    if (!password.trim()) {
+        setError('Password is required');
+        return;
+    }
+
+    setLoading(true);
     try {
-      setError(null);
-      setLoading(true);
-      
-      // Client-side validation
-      if (!email.trim()) {
-        throw new Error('Email is required');
-      }
-      
-      if (!password.trim()) {
-        throw new Error('Password is required');
-      }
-      
-      // Attempt login with rate limiting built into API service
-      await api.login({ email, password });
-      
-      // Clear form fields
-      setEmail('');
-      setPassword('');
-      
-      // Redirect to tasks page
+      await api.auth.login({ email, password });
       history.push('/tasks');
+
     } catch (err) {
-      // Extract error message
-      const errorMessage = err.message || 'Login failed. Please check your credentials and try again.';
+      const errorMessage = err.message || 'Login failed. Please check your credentials.';
       setError(errorMessage);
       console.error('Login error:', err);
     } finally {
       setLoading(false);
     }
   };
-  
+
+
   return (
     <div className="container auth-container">
       <div className="card auth-card">
         <h1 className="auth-title">Login to TaskFlow</h1>
-        
-        {error && (
-          <div className="error-message">
-            <p>{error}</p>
-            <button onClick={() => setError(null)} className="dismiss-error">×</button>
+
+        {/* Success Message (e.g., after registration) */}
+        {successMessage && (
+          // Added alert-dismissible for styling consistency with error
+          <div className="alert alert-success alert-dismissible">
+            <span>{successMessage}</span> {/* Wrap text in span for flex alignment */}
+             <button onClick={() => setSuccessMessage(null)} className="btn-close" aria-label="Close">
+                ×
+            </button>
           </div>
         )}
-        
-        <form className="auth-form" onSubmit={handleSubmit}>
+
+        {/* Error Message */}
+        {error && (
+          <div className="alert alert-danger alert-dismissible">
+            <span>{error}</span> {/* Wrap text in span for flex alignment */}
+            <button onClick={() => setError(null)} className="btn-close" aria-label="Close">
+                ×
+            </button>
+          </div>
+        )}
+
+        <form className="auth-form" onSubmit={handleSubmit} noValidate>
+          {/* Email Input */}
           <div className="form-group">
             <label htmlFor="email">Email:</label>
             <input
@@ -72,13 +110,14 @@ const LoginPage = () => {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={loading}
-              className="form-input"
-              placeholder="your@email.com"
+              className="form-input" // Use consistent class
+              placeholder="your.email@example.com"
               required
-              autoFocus
+              autoFocus // Keep autoFocus
             />
           </div>
-          
+
+          {/* Password Input */}
           <div className="form-group">
             <label htmlFor="password">Password:</label>
             <input
@@ -87,27 +126,39 @@ const LoginPage = () => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               disabled={loading}
-              className="form-input"
-              placeholder="••••••••••••"
+              className="form-input" // Use consistent class
+              placeholder="Enter your password"
               required
             />
           </div>
-          
-          <div className="forgot-password">
-            <a href="/forgot-password">Forgot password?</a>
+
+          {/* Forgot Password Link */}
+          {/* Kept existing classes text-end mb-3 */}
+          <div className="forgot-password text-end mb-3">
+            <Link to="/forgot-password">Forgot password?</Link>
           </div>
-          
-          <button 
-            className="button button-primary button-block" 
+
+          {/* Submit Button */}
+          <button
+            // Use consistent button classes
+            className="button button-primary button-block"
             type="submit"
             disabled={loading}
           >
-            {loading ? 'Logging in...' : 'Login'}
+            {loading ? (
+                 <>
+                    {/* Use consistent spinner classes */}
+                    <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    <span> Logging in...</span>
+                </>
+            ) : 'Login'}
           </button>
         </form>
-        
-        <div className="auth-footer">
-          <p>Don't have an account? <a href="/register">Register</a></p>
+
+        {/* Footer Link */}
+        {/* Kept existing class mt-4 */}
+        <div className="auth-footer mt-4">
+          <p>Don't have an account? <Link to="/register">Register</Link></p>
         </div>
       </div>
     </div>
