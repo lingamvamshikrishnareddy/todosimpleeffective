@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useHistory } from 'react-router-dom';
 import Task from '../components/Task';
+import TaskKanban from '../components/TaskKanban';
 import { Helmet } from 'react-helmet';
 import api from '../services/api';
 import './TaskPage.css';
@@ -27,6 +28,7 @@ const TaskPage = () => {
   const [userProfile, setUserProfile] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
+  const [viewMode, setViewMode] = useState('kanban'); // default to kanban
   const history = useHistory();
 
   // Create a stable reference for the timeout
@@ -67,14 +69,14 @@ const TaskPage = () => {
   // Create memoized query parameters for fetchTasks to prevent unnecessary re-renders
   const queryParams = useMemo(() => ({
     page,
-    limit: 10,
+    limit: viewMode === 'kanban' ? 100 : 10, // Load more tasks for kanban view
     status: getStatusFromFilter(),
     category: category || undefined,
     search: searchQuery || undefined,
     sortBy,
     priority: priority || undefined,
     dueDate: dueDate || undefined
-  }), [page, getStatusFromFilter, category, searchQuery, sortBy, priority, dueDate]);
+  }), [page, getStatusFromFilter, category, searchQuery, sortBy, priority, dueDate, viewMode]);
 
   // Memoize the fetch function without the timeout logic
   const executeFetch = useCallback(async () => {
@@ -248,6 +250,34 @@ const TaskPage = () => {
     } catch (err) {
       setError('Failed to update task status. Please try again.');
       console.error('Error in toggle complete operation:', err);
+    }
+  };
+
+  // New function to handle status change from kanban board
+  const handleStatusChange = async (taskId, newStatus) => {
+    try {
+      if (!taskId) {
+        console.error('Invalid task ID');
+        return;
+      }
+
+      // Optimistic update already handled by the Kanban component
+      try {
+        await api.tasks.updateTask(taskId, { status: newStatus });
+      } catch (err) {
+        // We need to refresh to get the correct state if the API call fails
+        executeFetch();
+
+        if (err.status === 429) {
+          setError('Too many requests. Please try again in a moment.');
+        } else {
+          setError('Failed to update task status. Please try again.');
+        }
+        console.error('Error updating task status:', err);
+      }
+    } catch (err) {
+      setError('Failed to update task status. Please try again.');
+      console.error('Error in status change operation:', err);
     }
   };
 
@@ -437,143 +467,188 @@ const TaskPage = () => {
           </div>
         </div>
 
-        {/* Filters UI */}
-        <div className="task-filters-container">
-          <div className="task-search">
-            <form onSubmit={handleSearch}>
-              <div className="search-input-container">
-                <i className="fa fa-search search-icon"></i>
+        {/* View Toggle */}
+        <div className="view-toggle">
+          <button 
+            className={`view-button ${viewMode === 'list' ? 'active' : ''}`}
+            onClick={() => setViewMode('list')}
+          >
+            <i className="fa fa-list"></i> List View
+          </button>
+          <button 
+            className={`view-button ${viewMode === 'kanban' ? 'active' : ''}`}
+            onClick={() => setViewMode('kanban')}
+          >
+            <i className="fa fa-columns"></i> Kanban View
+          </button>
+        </div>
+
+        {/* Search and Filter Controls */}
+        <div className="card filter-card">
+          <div className="filter-controls">
+            <form onSubmit={handleSearch} className="search-form">
+              <div className="form-group search-group">
                 <input
                   type="text"
+                  placeholder="Search tasks..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search tasks..."
-                  className="search-input"
+                  className="form-input search-input"
                 />
-                <button type="submit" className="search-button" disabled={isFetching}>
-                  {isFetching ? 'Searching...' : 'Search'}
+                <button type="submit" className="search-button">
+                  <i className="fa fa-search"></i>
                 </button>
               </div>
             </form>
-          </div>
 
-          <div className="filter-controls">
-            <div className="task-filter">
-              <span className="filter-label">Status: </span>
-              <div className="button-group">
-                <button
-                  className={`filter-button ${filter === 'all' ? 'active' : ''}`}
-                  onClick={() => setFilter('all')}
-                  disabled={isFetching}
+            <div className="filter-options">
+              <div className="filter-group">
+                <label htmlFor="filterStatus">Status:</label>
+                <select
+                  id="filterStatus"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  className="form-select filter-select"
                 >
-                  All
-                </button>
-                <button
-                  className={`filter-button ${filter === 'active' ? 'active' : ''}`}
-                  onClick={() => setFilter('active')}
-                  disabled={isFetching}
-                >
-                  <i className="fa fa-circle-o"></i> Active
-                </button>
-                <button
-                  className={`filter-button ${filter === 'completed' ? 'active' : ''}`}
-                  onClick={() => setFilter('completed')}
-                  disabled={isFetching}
-                >
-                  <i className="fa fa-check-circle"></i> Completed
-                </button>
+                  <option value="all">All Tasks</option>
+                  <option value="active">Active</option>
+                  <option value="completed">Completed</option>
+                </select>
               </div>
-            </div>
 
-            <div className="task-sort">
-              <label htmlFor="sortTasks" className="sort-label">
-                <i className="fa fa-sort"></i> Sort by:
-              </label>
-              <select
-                id="sortTasks"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="sort-select"
-                disabled={isFetching}
+              <div className="filter-group">
+                <label htmlFor="filterSort">Sort By:</label>
+                <select
+                  id="filterSort"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="form-select filter-select"
+                >
+                  <option value="createdAt:desc">Newest First</option>
+                  <option value="createdAt:asc">Oldest First</option>
+                  <option value="title:asc">A-Z</option>
+                  <option value="title:desc">Z-A</option>
+                  <option value="priority:desc">Priority (High-Low)</option>
+                  <option value="priority:asc">Priority (Low-High)</option>
+                  <option value="dueDate:asc">Due Date (Earliest)</option>
+                  <option value="dueDate:desc">Due Date (Latest)</option>
+                </select>
+              </div>
+
+              <button
+                className="clear-filters-button"
+                onClick={handleClearFilters}
               >
-                <option value="createdAt:desc">Newest First</option>
-                <option value="createdAt:asc">Oldest First</option>
-                <option value="dueDate:asc">Due Date (Soon First)</option>
-                <option value="title:asc">Title (A-Z)</option>
-                <option value="priority:desc">Priority (High-Low)</option>
-              </select>
+                <i className="fa fa-times"></i> Clear Filters
+              </button>
             </div>
-
-            <button
-              className="clear-filters-button"
-              onClick={handleClearFilters}
-              disabled={isFetching}
-            >
-              <i className="fa fa-refresh"></i> Clear Filters
-            </button>
           </div>
         </div>
 
-        {/* Loading and Empty States */}
-        {loading ? (
-          <div className="loading-state">
-            <div className="spinner"></div>
-            <p>Loading tasks...</p>
-          </div>
-        ) : (
-          <div className="task-list-container">
-            {tasks.length > 0 ? (
-              <div className="task-list">
-                {tasks.map((task) => (
-                  <Task
-                    key={task._id || task.id}
-                    task={task}
-                    onDelete={deleteTask}
-                    onEdit={editTask}
-                    onToggleComplete={toggleComplete}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">
-                <i className="fa fa-clipboard empty-icon"></i>
-                <p className="empty-message">No {filter !== 'all' ? filter : ''} tasks found.</p>
-                <p className="empty-action">{filter === 'all' ? 'Start by adding a task above!' : 'Try changing your filters or adding a new task.'}</p>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Task Content */}
+        <div className="task-content">
+          {loading ? (
+            <div className="loading-spinner">
+              <i className="fa fa-spinner fa-spin"></i>
+              <p>Loading tasks...</p>
+            </div>
+          ) : (
+            <>
+              {viewMode === 'kanban' ? (
+                <TaskKanban 
+                  tasks={tasks} 
+                  onEdit={editTask} 
+                  onDelete={deleteTask}
+                  onStatusChange={handleStatusChange}
+                />
+              ) : (
+                <>
+                  <div className="task-stats">
+                    <span className="task-count">
+                      <i className="fa fa-check-circle"></i> {tasks.length} tasks total
+                    </span>
+                    <span className="task-count active">
+                      <i className="fa fa-clock-o"></i> {activeTaskCount} active
+                    </span>
+                    <span className="task-count completed">
+                      <i className="fa fa-check"></i> {tasks.length - activeTaskCount} completed
+                    </span>
+                  </div>
 
-        {/* Pagination */}
-        {tasks.length > 0 && (
-          <div className="pagination">
-            <button
-              disabled={page === 1 || isFetching}
-              onClick={() => handlePageChange(page - 1)}
-              className="pagination-button"
-            >
-              <i className="fa fa-chevron-left"></i> Previous
-            </button>
-            <span className="pagination-info">Page {page} of {totalPages}</span>
-            <button
-              disabled={page === totalPages || isFetching}
-              onClick={() => handlePageChange(page + 1)}
-              className="pagination-button"
-            >
-              Next <i className="fa fa-chevron-right"></i>
-            </button>
-          </div>
-        )}
+                  <div className="task-list">
+                    {tasks.length === 0 ? (
+                      <div className="empty-state">
+                        <i className="fa fa-tasks empty-icon"></i>
+                        <p>No tasks found with the current filters.</p>
+                        <button
+                          className="button secondary-button"
+                          onClick={handleClearFilters}
+                        >
+                          Clear Filters
+                        </button>
+                      </div>
+                    ) : (
+                      tasks.map(task => (
+                        <Task
+                          key={task._id || task.id}
+                          task={task}
+                          onToggle={() => toggleComplete(task._id || task.id)}
+                          onEdit={() => editTask(task)}
+                          onDelete={() => deleteTask(task._id || task.id)}
+                        />
+                      ))
+                    )}
+                  </div>
 
-        {/* Task Summary */}
-        {tasks.length > 0 && (
-          <div className="task-summary">
-            <p><i className="fa fa-list-ul"></i> {activeTaskCount} tasks remaining</p>
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div className="pagination">
+                      <button
+                        className="pagination-button"
+                        onClick={() => handlePageChange(page - 1)}
+                        disabled={page === 1}
+                      >
+                        <i className="fa fa-chevron-left"></i> Previous
+                      </button>
+                      
+                      <div className="pagination-info">
+                        Page {page} of {totalPages}
+                      </div>
+                      
+                      <button
+                        className="pagination-button"
+                        onClick={() => handlePageChange(page + 1)}
+                        disabled={page === totalPages}
+                      >
+                        Next <i className="fa fa-chevron-right"></i>
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Quick help section */}
+        <div className="quick-help-section">
+          <div className="card help-card">
+            <h3 className="help-title"><i className="fa fa-lightbulb-o"></i> Tips</h3>
+            <ul className="help-list">
+              <li>Use the Kanban view to drag-and-drop tasks between states</li>
+              <li>Set priorities and due dates to keep track of important tasks</li>
+              <li>Use categories to organize your tasks by project or area</li>
+              <li>Search for specific tasks using the search bar</li>
+            </ul>
           </div>
-        )}
+        </div>
+
+        <footer className="app-footer">
+          <p>&copy; {new Date().getFullYear()} TaskFlow App. All rights reserved.</p>
+        </footer>
       </div>
     </>
   );
 };
 
-export default React.memo(TaskPage);
+export default TaskPage;
