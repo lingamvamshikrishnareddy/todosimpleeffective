@@ -1,51 +1,59 @@
-const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+// middleware/authMiddleware.js
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 
-const userSchema = mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-  },
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  password: {
-    type: String,
-    required: true,
-  },
-  resetPasswordToken: {
-    type: String,
-  },
-  resetPasswordExpire: {
-    type: Date,
-  }
-}, {
-  timestamps: true,
-});
+// Simple in-memory cache for authenticated users
+const userCache = new Map();
 
-// Method to compare entered password with hashed password
-userSchema.methods.matchPassword = async function(enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
-};
-
-// Middleware to hash password before saving
-userSchema.pre('save', async function(next) {
-  // Only hash the password if it's modified (or new)
-  if (!this.isModified('password')) {
-    return next();
-  }
-  
+/**
+ * Authentication middleware
+ * Verifies JWT token and adds user to request object
+ * Includes performance optimizations with caching
+ */
+const auth = async (req, res, next) => {
+  const startTime = Date.now();
   try {
-    // Generate salt
-    const salt = await bcrypt.genSalt(10);
-    // Hash password with salt
-    this.password = await bcrypt.hash(this.password, salt);
+    // Get token from header
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    
+    // Check if token exists in cookie if not in header
+    const cookieToken = req.cookies?.jwt;
+    const finalToken = token || cookieToken;
+    
+    // Check if no token
+    if (!finalToken) {
+      return res.status(401).json({ message: 'No token, authorization denied' });
+    }
+    
+    // Verify token
+    const decoded = jwt.verify(finalToken, process.env.JWT_SECRET);
+    
+    // Check cache first to avoid database query
+    if (userCache.has(decoded.id)) {
+      req.user = userCache.get(decoded.id);
+      console.log(`Auth operation with cache hit took ${Date.now() - startTime}ms`);
+      return next();
+    }
+    
+    // Find user by id if not in cache
+    const user = await User.findById(decoded.id).select('-password');
+    
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+    
+    // Set user in cache with 5-minute expiry
+    userCache.set(decoded.id, user);
+    setTimeout(() => userCache.delete(decoded.id), 5 * 60 * 1000);
+    
+    // Set user in request
+    req.user = user;
+    console.log(`Auth operation with DB query took ${Date.now() - startTime}ms`);
     next();
   } catch (error) {
-    next(error);
+    console.error('Auth middleware error:', error);
+    res.status(401).json({ message: 'Token is not valid' });
   }
-});
+};
 
-module.exports = mongoose.model('User', userSchema);
+module.exports = auth;
