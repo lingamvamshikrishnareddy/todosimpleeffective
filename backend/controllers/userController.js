@@ -1,20 +1,35 @@
 // controllers/userController.js
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const crypto = require('crypto'); // For generating reset tokens
-const bcrypt = require('bcryptjs'); // Needed for explicit password check if needed
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 
-// Generate authentication token (only needed for login now)
+// Import User model with error handling
+let User;
+try {
+  User = require('../models/User');
+  console.log('User model imported successfully');
+} catch (error) {
+  console.error('Error importing User model:', error);
+  throw error;
+}
+
+// Verify User model has required methods
+if (!User || typeof User.findOne !== 'function') {
+  console.error('User model is not properly initialized as a Mongoose model');
+  throw new Error('User model initialization failed');
+}
+
+// Generate authentication token
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: '1d', // Example: 1 day expiry for access token
+    expiresIn: '1d',
   });
 };
 
-// Generate refresh token (longer expiry)
+// Generate refresh token
 const generateRefreshToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: '7d', // Example: 7 days expiry for refresh token
+    expiresIn: '7d',
   });
 };
 
@@ -26,6 +41,8 @@ const generateRefreshToken = (id) => {
 const registerUser = async (req, res) => {
   const startTime = Date.now();
   const { name, email, password } = req.body;
+
+  console.log('Registration attempt for:', email); // Debug log
 
   // Basic input validation
   if (!name || !email || !password) {
@@ -42,37 +59,55 @@ const registerUser = async (req, res) => {
   }
 
   try {
-    // Check if user already exists - use lean() for faster query
+    // Verify User model is available
+    if (!User || typeof User.findOne !== 'function') {
+      console.error('User model not available in registerUser function');
+      return res.status(500).json({ message: 'Database model error' });
+    }
+
+    console.log('Checking if user exists...'); // Debug log
+    
+    // Check if user already exists
     const userExists = await User.findOne({ email }).lean();
+    console.log('User exists check completed:', !!userExists); // Debug log
 
     if (userExists) {
       return res.status(400).json({ message: 'User with this email already exists' });
     }
 
-    // Create new user (password hashing is handled by the pre-save hook in the model)
+    console.log('Creating new user...'); // Debug log
+    
+    // Create new user
     const user = await User.create({
       name,
       email,
       password,
     });
 
+    console.log('User created successfully:', user._id); // Debug log
+
     if (user) {
-      // Respond with success message, DO NOT send token here
       res.status(201).json({
         message: 'Registration successful. Please log in.',
-        user: { // Send minimal non-sensitive info if needed
+        user: {
           _id: user._id,
           name: user.name,
           email: user.email,
         }
       });
     } else {
-      // This case might be redundant if User.create throws an error, but good for safety
       res.status(400).json({ message: 'Invalid user data during creation' });
     }
     console.log(`Registration operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Registration Error:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Handle specific MongoDB errors
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'User with this email already exists' });
+    }
+    
     res.status(500).json({
       message: 'Server error during registration',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -94,31 +129,33 @@ const authUser = async (req, res) => {
   }
 
   try {
-    // Use lean() for faster query when just checking if user exists
+    // Verify User model is available
+    if (!User || typeof User.findOne !== 'function') {
+      console.error('User model not available in authUser function');
+      return res.status(500).json({ message: 'Database model error' });
+    }
+
     const user = await User.findOne({ email });
 
     if (user && (await user.matchPassword(password))) {
-      // Generate both access and refresh tokens
       const accessToken = generateToken(user._id);
       const refreshToken = generateRefreshToken(user._id);
 
-      // Store refresh token securely in HTTP-only cookie
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV !== 'development', // Use secure cookies in production
-        sameSite: 'strict', // Prevent CSRF
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+        secure: process.env.NODE_ENV !== 'development',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000
       });
 
       res.json({
         message: "Login successful",
-        user: { // Send necessary user details
+        user: {
           _id: user._id,
           name: user.name,
           email: user.email,
         },
-        token: accessToken, // Access Token
-        // Don't send refresh token in body for security, only in cookie
+        token: accessToken,
       });
     } else {
       res.status(401).json({ message: 'Invalid email or password' });
@@ -140,7 +177,6 @@ const authUser = async (req, res) => {
  */
 const refreshToken = async (req, res) => {
   const startTime = Date.now();
-  // Try to get token from cookie first, then body
   const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
   if (!refreshToken) {
@@ -148,25 +184,17 @@ const refreshToken = async (req, res) => {
   }
 
   try {
-    // Verify the refresh token
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-
-    // Optionally: Check if the refresh token is still valid/not revoked in DB
-
-    // Use lean() for faster query when just checking if user exists
     const user = await User.findById(decoded.id).select('_id').lean();
 
     if (!user) {
       return res.status(401).json({ message: 'Invalid refresh token - user not found' });
     }
 
-    // Generate a new access token
     const newAccessToken = generateToken(user._id);
 
     res.json({
       token: newAccessToken,
-      // Optionally issue a new refresh token for rotation
-      // refreshToken: generateRefreshToken(user._id)
     });
     console.log(`Token refresh operation took ${Date.now() - startTime}ms`);
   } catch (error) {
@@ -181,18 +209,11 @@ const refreshToken = async (req, res) => {
 /**
  * @desc    Logout user
  * @route   POST /api/auth/logout
- * @access  Private (Requires valid access token to identify user if needed, e.g., invalidate refresh token)
+ * @access  Private
  */
 const logoutUser = async (req, res) => {
   const startTime = Date.now();
   try {
-    // Optional: Invalidate the refresh token on the server-side if stored
-    // const { refreshToken } = req.body; // If sent from client
-    // if (refreshToken) {
-    //   // ... logic to invalidate ...
-    // }
-
-    // Clear refresh token cookie
     res.clearCookie('refreshToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV !== 'development',
@@ -222,7 +243,6 @@ const forgotPassword = async (req, res) => {
     return res.status(400).json({ message: 'Email is required' });
   }
 
-  // Email format validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({ message: 'Please provide a valid email address' });
@@ -232,31 +252,25 @@ const forgotPassword = async (req, res) => {
     const user = await User.findOne({ email });
 
     if (!user) {
-      // Security: Don't reveal if email exists
       return res.status(200).json({
         message: 'If an account with that email exists, password reset instructions have been sent.'
       });
     }
 
-    // Generate reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
     user.resetPasswordToken = crypto
       .createHash('sha256')
       .update(resetToken)
       .digest('hex');
-    user.resetPasswordExpire = Date.now() + 30 * 60 * 1000; // 30 minutes expiry
+    user.resetPasswordExpire = Date.now() + 30 * 60 * 1000;
 
-    await user.save({ validateBeforeSave: false }); // Skip validation for these fields
+    await user.save({ validateBeforeSave: false });
 
-    // Create reset URL (Ensure FRONTEND_URL is set in your .env)
     const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password/${resetToken}`;
 
-    // TODO: Implement actual email sending logic here
-    // For development only - remove in production
     if (process.env.NODE_ENV === 'development') {
       console.log(`[DEV ONLY] Password Reset URL for ${email}: ${resetUrl}`);
     }
-    // await sendEmail({ to: user.email, subject: 'Password Reset', text: `Reset link: ${resetUrl}` });
 
     res.status(200).json({
       message: 'If an account with that email exists, password reset instructions have been sent.'
@@ -264,7 +278,6 @@ const forgotPassword = async (req, res) => {
     console.log(`Forgot password operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Forgot Password Error:', error);
-    // Attempt to clear potentially saved token info on error
     try {
       const user = await User.findOne({ email });
       if (user && user.resetPasswordToken) {
@@ -292,13 +305,11 @@ const validateResetToken = async (req, res) => {
   const { token } = req.params;
 
   try {
-    // Hash the incoming token to compare with the stored hash
     const resetPasswordToken = crypto
       .createHash('sha256')
       .update(token)
       .digest('hex');
 
-    // Find user by hashed token and check expiry
     const user = await User.findOne({
       resetPasswordToken,
       resetPasswordExpire: { $gt: Date.now() }
@@ -308,7 +319,6 @@ const validateResetToken = async (req, res) => {
       return res.status(400).json({ message: 'Password reset token is invalid or has expired' });
     }
 
-    // Token is valid
     res.status(200).json({ message: 'Token is valid' });
     console.log(`Validate reset token operation took ${Date.now() - startTime}ms`);
   } catch (error) {
@@ -337,13 +347,11 @@ const resetPassword = async (req, res) => {
   }
 
   try {
-    // Hash the incoming token
     const resetPasswordToken = crypto
       .createHash('sha256')
       .update(token)
       .digest('hex');
 
-    // Find user by hashed token and check expiry
     const user = await User.findOne({
       resetPasswordToken,
       resetPasswordExpire: { $gt: Date.now() }
@@ -353,16 +361,12 @@ const resetPassword = async (req, res) => {
       return res.status(400).json({ message: 'Password reset token is invalid or has expired' });
     }
 
-    // Set new password (hashing handled by pre-save hook)
     user.password = newPassword;
-
-    // Clear the reset token fields
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
 
-    await user.save(); // This will trigger the pre-save hook to hash the new password
+    await user.save();
 
-    // Just confirm success and let them log in manually
     res.json({ message: 'Password reset successful. You can now log in with your new password.' });
     console.log(`Reset password operation took ${Date.now() - startTime}ms`);
   } catch (error) {
@@ -382,11 +386,10 @@ const resetPassword = async (req, res) => {
 const getUserProfile = async (req, res) => {
   const startTime = Date.now();
   try {
-    // req.user is populated by the auth middleware
-    const user = await User.findById(req.user.id).select('-password'); // Use req.user.id
+    const user = await User.findById(req.user.id).select('-password');
 
     if (user) {
-      res.json({ // Structure consistently
+      res.json({
         _id: user._id,
         name: user.name,
         email: user.email,
@@ -394,7 +397,6 @@ const getUserProfile = async (req, res) => {
         updatedAt: user.updatedAt
       });
     } else {
-      // This case should be rare if token is valid but user deleted
       res.status(404).json({ message: 'User not found' });
     }
     console.log(`Get profile operation took ${Date.now() - startTime}ms`);
@@ -424,9 +426,7 @@ const updateUserProfile = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Check if email is changing and if it's already taken
     if (email && email !== user.email) {
-      // Email format validation
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(email)) {
         return res.status(400).json({ message: 'Please provide a valid email address' });
@@ -450,7 +450,7 @@ const updateUserProfile = async (req, res) => {
       name: updatedUser.name,
       email: updatedUser.email,
       createdAt: updatedUser.createdAt,
-      updatedAt: updatedUser.updatedAt
+      updatedUser: updatedUser.updatedAt
     });
     console.log(`Update profile operation took ${Date.now() - startTime}ms`);
   } catch (error) {
@@ -486,12 +486,10 @@ const changePassword = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Check if current password matches
     if (!(await user.matchPassword(currentPassword))) {
       return res.status(401).json({ message: 'Incorrect current password' });
     }
 
-    // Set new password (hashing handled by pre-save hook)
     user.password = newPassword;
     await user.save();
 
