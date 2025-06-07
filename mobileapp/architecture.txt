@@ -1,0 +1,34 @@
+ToDoApp/
+├── assets/                    # Images, fonts, etc.
+│   └── images/
+├── src/
+│   ├── components/            # Reusable components
+│   │   ├── KanbanColumn.js
+│   │   ├── SortableTask.js
+│   │   ├── Task.js
+│   │   └── TaskKanban.js
+│   ├── navigation/            # React Navigation setup
+│   │   ├── AppNavigator.js    # Main navigation structure
+│   │   ├── AuthNavigator.js   # Auth-related navigation
+│   │   └── index.js           # Navigation exports
+│   ├── screens/               # App screens (similar to pages in web)
+│   │   ├── auth/
+│   │   │   ├── ForgotPasswordScreen.js
+│   │   │   ├── LoginScreen.js
+│   │   │   └── RegisterScreen.js
+│   │   ├── HomeScreen.js  
+│   │   └── TaskScreen.js
+│   ├── services/              # API and other services
+│   │   └── api.js
+│   ├── styles/                # Global styles
+│   │   ├── colors.js          # Color constants
+│   │   ├── spacing.js         # Spacing constants
+│   │   └── typography.js      # Text styles
+│   ├── utils/                 # Helper functions
+│   └── App.js                 # Root component
+├── .env                       # Environment variables
+├── app.json                   # App configuration
+├── babel.config.js            # Babel config
+├── index.js                   # Entry point
+├── metro.config.js            # Metro bundler config
+└── package.json               # Dependencies

@@ -1,3 +1,4 @@
+// models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -25,6 +26,9 @@ const userSchema = mongoose.Schema({
   timestamps: true,
 });
 
+// Add index for faster email lookup during authentication
+userSchema.index({ email: 1 });
+
 // Method to compare entered password with hashed password
 userSchema.methods.matchPassword = async function(enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
@@ -38,8 +42,10 @@ userSchema.pre('save', async function(next) {
   }
   
   try {
-    // Generate salt
-    const salt = await bcrypt.genSalt(10);
+    // Generate salt with reduced rounds for better performance (8 instead of 10)
+    // Still secure but faster, especially for development and testing
+    const salt = await bcrypt.genSalt(8);
+    
     // Hash password with salt
     this.password = await bcrypt.hash(this.password, salt);
     next();

@@ -1,21 +1,32 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useHistory } from 'react-router-dom';
-import Task from '../components/Task';
+import Task from '../components/Task'; // Assuming path
+import TaskKanban from '../components/TaskKanban'; // Assuming path
 import { Helmet } from 'react-helmet';
-import api from '../services/api';
-import './TaskPage.css';
+import api from '../services/api'; // Assuming path
+import './TaskPage.css'; // Assuming path
 
-// Number of ms to debounce task fetching
 const DEBOUNCE_DELAY = 300;
+const VALID_TASK_STATUSES_ARRAY = ['backlog', 'active', 'under-review', 'completed', 'archived'];
+const DEFAULT_ACTIVE_STATUS = 'active';
+
+const TASK_STATUSES = {
+  BACKLOG: 'backlog',
+  ACTIVE: 'active',
+  UNDER_REVIEW: 'under-review',
+  COMPLETED: 'completed',
+  ARCHIVED: 'archived',
+};
 
 const TaskPage = () => {
   const [tasks, setTasks] = useState([]);
-  const [taskText, setTaskText] = useState('');
+  const [taskTitle, setTaskTitle] = useState('');
   const [taskDescription, setTaskDescription] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [filter, setFilter] = useState('all');
-  const [loading, setLoading] = useState(true);
+  const [mainLoading, setMainLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -26,554 +37,596 @@ const TaskPage = () => {
   const [sortBy, setSortBy] = useState('createdAt:desc');
   const [userProfile, setUserProfile] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [isFetching, setIsFetching] = useState(false);
+  const [isFetching, setIsFetching] = useState(false); // For UI feedback during fetch
+  const [viewMode, setViewMode] = useState('kanban'); // Default to Kanban
+  
   const history = useHistory();
+  const debounceTimeoutRef = useRef(null);
+  const fetchingGuardRef = useRef(false); // Prevents re-entrant executeFetch calls
 
-  // Create a stable reference for the timeout
-  const timeoutRef = useRef(null);
+  const parseApiError = (err, defaultMessage = 'An unexpected error occurred.') => {
+    let message = defaultMessage;
+    let details = '';
+    if (err?.status === 429) {
+      message = 'Too many requests. Please try again in a moment.';
+    } else if (err?.data) {
+      message = err.data.message || message;
+      details = err.data.detailedMessage || (typeof err.data.error === 'string' ? err.data.error : '');
+      if (!details && err.data.error && typeof err.data.error === 'object') {
+        details = Object.values(err.data.error).map(e => e.message || e).join('; ');
+      }
+    } else if (err?.message && !String(err.message).toLowerCase().includes('status code')) {
+        message = err.message;
+    }
+    return { message, details };
+  };
 
-  // Get user profile on component mount with error handling
   useEffect(() => {
     let isMounted = true;
-
     const getUserProfile = async () => {
       try {
         const profile = await api.user.getProfile();
-        if (isMounted) {
-          setUserProfile(profile);
-        }
+        if (isMounted) setUserProfile(profile);
       } catch (err) {
         console.error('Error fetching user profile:', err);
-        if (isMounted && (err.status === 401 || err.message?.includes('unauthorized'))) {
+        if (isMounted && (err?.status === 401 || err?.message?.includes('unauthorized'))) {
           history.push('/login');
         }
       }
     };
-
     getUserProfile();
-
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [history]);
 
-  // Convert filter to API status - memoize function
-  const getStatusFromFilter = useCallback(() => {
+  const getStatusQueryParam = useCallback(() => {
     if (filter === 'completed') return 'completed';
     if (filter === 'active') return 'active';
-    return '';
+    return ''; // 'all', fetches all non-archived unless backend logic changes
   }, [filter]);
 
-  // Create memoized query parameters for fetchTasks to prevent unnecessary re-renders
   const queryParams = useMemo(() => ({
-    page,
-    limit: 10,
-    status: getStatusFromFilter(),
+    page: viewMode === 'list' ? page : 1, // Kanban always loads page 1 (all relevant tasks)
+    limit: viewMode === 'kanban' ? 100 : 10, // Kanban might need more tasks
+    status: getStatusQueryParam(),
     category: category || undefined,
     search: searchQuery || undefined,
-    sortBy,
+    sortBy, // SortBy might be less relevant for Kanban if it has its own ordering
     priority: priority || undefined,
-    dueDate: dueDate || undefined
-  }), [page, getStatusFromFilter, category, searchQuery, sortBy, priority, dueDate]);
+    dueDate: dueDate || undefined,
+  }), [page, viewMode, getStatusQueryParam, category, searchQuery, sortBy, priority, dueDate]);
 
-  // Memoize the fetch function without the timeout logic
-  const executeFetch = useCallback(async () => {
-    if (isFetching) return;
+  const executeFetch = useCallback(async (showMainLoadingSpinner = true) => {
+    if (fetchingGuardRef.current) return; // Prevent re-entrant calls
+
+    fetchingGuardRef.current = true;
+    setIsFetching(true); // For UI feedback like disabling buttons
+    if (showMainLoadingSpinner) setMainLoading(true);
+    setError(null);
 
     try {
-      setIsFetching(true);
-      setLoading(true);
-      setError(null);
-
       const response = await api.tasks.getTasks(queryParams);
-
       setTasks(response.tasks || []);
-      setTotalPages(response.pagination?.pages || 1);
-    } catch (err) {
-      if (err.status === 429) {
-        setError('Too many requests. Please try again in a moment.');
-      } else if (err.status === 401) {
-        history.push('/login');
-      } else {
-        setError('Failed to load tasks. Please try again.');
-      }
-      console.error('Error fetching tasks:', err);
-    } finally {
-      setLoading(false);
-      setIsFetching(false);
-    }
-  }, [queryParams, history, isFetching]);
-
-  // Handle the debounced fetch separately
-  useEffect(() => {
-    // Clear any existing timeout first
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-
-    // Set new timeout
-    timeoutRef.current = setTimeout(() => {
-      executeFetch();
-    }, DEBOUNCE_DELAY);
-
-    // Cleanup on unmount or when dependencies change
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, [executeFetch]);
-
-  // Optimized task actions with error handling and retries
-  const addTask = async () => {
-    if (taskText.trim() === '') return;
-
-    try {
-      setError(null);
-
-      if (isEditing) {
-        await api.tasks.updateTask(currentTaskId, {
-          title: taskText,
-          description: taskDescription,
-          category,
-          priority,
-          dueDate: dueDate || undefined
-        });
-
-        setIsEditing(false);
-        setCurrentTaskId(null);
-      } else {
-        await api.tasks.createTask({
-          title: taskText,
-          description: taskDescription,
-          category,
-          priority,
-          dueDate: dueDate || undefined
-        });
-      }
-
-      // Reset form
-      setTaskText('');
-      setTaskDescription('');
-      setCategory('');
-      setPriority('');
-      setDueDate('');
-
-      // Refresh task list
-      executeFetch();
-    } catch (err) {
-      const errorMessage = err.status === 429
-        ? 'Too many requests. Please try again in a moment.'
-        : 'Failed to save task. Please try again.';
-
-      setError(errorMessage);
-      console.error('Error saving task:', err);
-    }
-  };
-
-  // Optimized delete with correct API call
-  const deleteTask = async (taskId) => {
-    try {
-      if (!taskId) {
-        console.error('Invalid task ID');
-        return;
-      }
-
-      // Optimistic UI update
-      const originalTasks = [...tasks];
-      setTasks(prevTasks => prevTasks.filter(task => (task._id || task.id) !== taskId));
-
-      try {
-        await api.tasks.deleteTask(taskId);
-      } catch (err) {
-        // Revert optimistic update on error
-        setTasks(originalTasks);
-
-        if (err.status === 429) {
-          setError('Too many requests. Please try again in a moment.');
-        } else {
-          setError('Failed to delete task. Please try again.');
+      if (viewMode === 'list') {
+        setTotalPages(response.pagination?.pages || 1);
+        if (page > (response.pagination?.pages || 1) && (response.pagination?.pages || 1) > 0) {
+            setPage(response.pagination.pages); // Adjust if current page is out of bounds
         }
-        console.error('Error deleting task:', err);
+      } else {
+        setTotalPages(1); // Kanban loads all relevant, so effectively 1 page
       }
     } catch (err) {
-      setError('Failed to delete task. Please try again.');
-      console.error('Error in delete task operation:', err);
+      console.error('Error fetching tasks:', err);
+      const parsedError = parseApiError(err, 'Failed to load tasks.');
+      if (err?.status === 401) history.push('/login');
+      else setError(parsedError);
+    } finally {
+      if (showMainLoadingSpinner) setMainLoading(false);
+      setIsFetching(false);
+      fetchingGuardRef.current = false;
+    }
+  }, [queryParams, history, viewMode, page]); // Added viewMode and page
+
+  useEffect(() => {
+    if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
+    debounceTimeoutRef.current = setTimeout(() => {
+      executeFetch(true); // Show main loading spinner on debounced fetches
+    }, DEBOUNCE_DELAY);
+    return () => { if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current); };
+  }, [executeFetch]); // executeFetch is the dependency
+
+  const resetForm = useCallback(() => {
+    setTaskTitle('');
+    setTaskDescription('');
+    // Do not reset category, priority, dueDate from form on cancel, only on successful add/edit
+    // setCategory(''); 
+    // setPriority('');
+    // setDueDate('');
+    setIsEditing(false);
+    setCurrentTaskId(null);
+  }, []);
+  
+  const clearFullForm = useCallback(() => {
+    setTaskTitle('');
+    setTaskDescription('');
+    setCategory(''); 
+    setPriority('');
+    setDueDate('');
+    setIsEditing(false);
+    setCurrentTaskId(null);
+  }, []);
+
+
+  const handleAddTask = async () => {
+    if (taskTitle.trim() === '') {
+      setError({ message: "Task title cannot be empty." });
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    
+    const taskPayload = {
+      title: taskTitle,
+      description: taskDescription,
+      category: category || undefined,
+      priority: priority || undefined,
+      dueDate: dueDate || undefined,
+      // status is NOT sent; backend will default to 'active'
+    };
+
+    try {
+      if (isEditing && currentTaskId) {
+        const response = await api.tasks.updateTask(currentTaskId, taskPayload);
+        setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === currentTaskId ? response.task : t));
+      } else {
+        const response = await api.tasks.createTask(taskPayload);
+        // Add to local state optimistically (new task should have 'active' status from backend)
+        setTasks(prevTasks => [response.task, ...prevTasks]);
+      }
+      clearFullForm(); // Clear all form fields after successful operation
+      // No full executeFetch here to avoid jarring reload. UI updates optimistically.
+      // If specific data like total counts needs refresh, consider a targeted fetch or backend returning updated counts.
+    } catch (err) {
+      console.error('Error saving task:', err);
+      setError(parseApiError(err, `Failed to ${isEditing ? 'update' : 'create'} task.`));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const editTask = async (task) => {
+  const handleDeleteTask = async (taskId) => {
+    if (!taskId) return;
+    
+    const originalTasks = [...tasks];
+    setTasks(prevTasks => prevTasks.filter(task => (task._id || task.id) !== taskId));
+    // No isSubmitting state for delete, it's per-task
+    setError(null);
+
+    try {
+      await api.tasks.deleteTask(taskId);
+      // Optionally, if pagination or total counts are critical and not updated otherwise:
+      // executeFetch(false); // Silent refresh
+    } catch (err) {
+      console.error('Error deleting task:', err);
+      setTasks(originalTasks); // Revert optimistic update
+      setError(parseApiError(err, 'Failed to delete task.'));
+    }
+  };
+
+  const handleEditTask = (task) => {
     setIsEditing(true);
     setCurrentTaskId(task._id || task.id);
-    setTaskText(task.title || task.text);
+    setTaskTitle(task.title || '');
     setTaskDescription(task.description || '');
     setCategory(task.category || '');
     setPriority(task.priority || '');
     setDueDate(task.dueDate ? new Date(task.dueDate).toISOString().split('T')[0] : '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Fixed toggle with correct API call
-  const toggleComplete = async (taskId) => {
-    try {
-      if (!taskId) {
-        console.error('Invalid task ID');
-        return;
-      }
+  const handleToggleComplete = async (taskId) => {
+    if (!taskId) return;
+    
+    const originalTasks = [...tasks];
+    let updatedTaskData = null;
 
-      // Optimistic update
-      const originalTasks = [...tasks];
-      setTasks(prevTasks => prevTasks.map(task => {
+    setTasks(prevTasks =>
+      prevTasks.map(task => {
         if ((task._id || task.id) === taskId) {
-          return {
-            ...task,
-            status: task.status === 'completed' ? 'active' : 'completed'
+          const newStatus = task.status === TASK_STATUSES.COMPLETED ? DEFAULT_ACTIVE_STATUS : TASK_STATUSES.COMPLETED;
+          updatedTaskData = { 
+            ...task, 
+            status: newStatus,
+            completedAt: newStatus === TASK_STATUSES.COMPLETED ? new Date().toISOString() : null 
           };
+          return updatedTaskData;
         }
         return task;
-      }));
+      })
+    );
+    setError(null);
 
-      try {
-        await api.tasks.toggleTaskStatus(taskId);
-      } catch (err) {
-        // Revert optimistic update on error
-        setTasks(originalTasks);
-
-        if (err.status === 429) {
-          setError('Too many requests. Please try again in a moment.');
-        } else {
-          setError('Failed to update task status. Please try again.');
-        }
-        console.error('Error updating task status:', err);
-      }
+    try {
+      const response = await api.tasks.toggleTaskStatus(taskId);
+      // Sync with potentially more complete data from backend if needed
+      setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === taskId ? response.task : t));
     } catch (err) {
-      setError('Failed to update task status. Please try again.');
-      console.error('Error in toggle complete operation:', err);
+      console.error('Error toggling task status:', err);
+      setTasks(originalTasks); // Revert
+      setError(parseApiError(err, 'Failed to update task status.'));
     }
   };
 
-  const handleSearch = (e) => {
+  const handleStatusChange = async (taskId, newStatus) => {
+    if (!taskId || !VALID_TASK_STATUSES_ARRAY.includes(newStatus)) {
+      setError({ message: 'Invalid data for status update.' });
+      return;
+    }
+
+    const originalTasks = [...tasks];
+    const taskToUpdateOriginal = originalTasks.find(t => (t._id || t.id) === taskId);
+    if (!taskToUpdateOriginal) return;
+
+    setTasks(prevTasks =>
+      prevTasks.map(task =>
+        (task._id || task.id) === taskId 
+        ? { ...task, 
+            status: newStatus,
+            completedAt: newStatus === TASK_STATUSES.COMPLETED ? new Date().toISOString() : (taskToUpdateOriginal.status === TASK_STATUSES.COMPLETED ? null : task.completedAt) // Handle completedAt
+          } 
+        : task
+      )
+    );
+    setError(null);
+
+    try {
+      const response = await api.tasks.updateTask(taskId, { status: newStatus });
+      // Sync with backend response for full accuracy
+      setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === taskId ? response.task : t));
+    } catch (err) {
+      console.error(`Error updating task ${taskId} to status ${newStatus}:`, err);
+      setTasks(originalTasks); // Revert optimistic update
+      setError(parseApiError(err, `Failed to update status for task "${taskToUpdateOriginal.title || taskId}".`));
+      // Consider a silent executeFetch(false) here if Kanban gets out of sync badly on error
+    }
+  };
+  
+  const handleSearchSubmit = (e) => {
     e.preventDefault();
-    setPage(1); // Reset to first page when searching
-    executeFetch();
+    setPage(1); // Reset to page 1 on new search
+    executeFetch(true); // Trigger fetch, show main loading spinner
   };
 
-  const handleClearFilters = () => {
+  const handleClearFiltersAndSearch = () => {
     setFilter('all');
-    setCategory('');
-    setPriority('');
-    setDueDate('');
+    // Keep category, priority, dueDate from form for user convenience
+    // setCategory('');
+    // setPriority('');
+    // setDueDate('');
     setSearchQuery('');
     setSortBy('createdAt:desc');
     setPage(1);
+    // executeFetch will be triggered by useEffect due to queryParams change
   };
 
   const handlePageChange = (newPage) => {
-    if (newPage >= 1 && newPage <= totalPages) {
+    if (newPage >= 1 && newPage <= totalPages && newPage !== page && viewMode === 'list') {
       setPage(newPage);
+      // executeFetch will be triggered by useEffect
     }
   };
 
-  // Fixed logout with correct API call
   const handleLogout = async () => {
+    setLoggingOut(true);
+    setError(null);
     try {
-      setLoggingOut(true);
       await api.auth.logout();
       history.push('/login');
     } catch (err) {
-      setError('Logout failed. Please try again.');
       console.error('Logout error:', err);
+      setError(parseApiError(err, 'Logout failed.'));
       setLoggingOut(false);
     }
   };
-
-  // Memoize active tasks count to avoid recalculation on every render
+  
   const activeTaskCount = useMemo(() => {
-    return tasks.filter(task => task.status !== 'completed').length;
+    return tasks.filter(task => ![TASK_STATUSES.COMPLETED, TASK_STATUSES.ARCHIVED].includes(task.status)).length;
   }, [tasks]);
+  
+  const completedTaskCount = useMemo(() => {
+    return tasks.filter(task => task.status === TASK_STATUSES.COMPLETED).length;
+  }, [tasks]);
+
+  // Effect to reset page to 1 if viewMode changes to Kanban, or if filters change that affect total pages
+  useEffect(() => {
+    if (viewMode === 'kanban') {
+        setPage(1); // Kanban view loads all items, conceptually page 1
+    }
+    // If other specific filter changes necessitate page reset, handle here
+  }, [viewMode, filter, searchQuery, category, priority, dueDate]);
+
 
   return (
     <>
       <Helmet>
-        <title>TaskFlow - Manage Your Tasks</title>
+        <title>{`TaskFlow - ${isEditing ? 'Edit Task' : (taskTitle || 'Manage Tasks')}`}</title>
         <meta name="description" content="Create, organize, and track your tasks efficiently with TaskFlow." />
       </Helmet>
 
-      <div className="container">
-        <div className="header task-header">
+      <div className="container task-page-container">
+        <header className="header task-header">
           <div className="logo-section">
             <h1 className="app-logo">TaskFlow</h1>
           </div>
-
-          {/* User profile and logout section */}
-          <div className="user-controls">
-            {userProfile && (
+          {userProfile && (
+            <div className="user-controls">
               <div className="user-info">
-                <span className="welcome-text">Welcome, {userProfile.name}</span>
+                <span className="welcome-text">Welcome, {userProfile.name || 'User'}</span>
                 <div className="user-actions">
-                  <a href="/profile" className="profile-link">
+                  {/* Use Link from react-router-dom if profile is an internal route */}
+                  <a href="/profile" className="profile-link" onClick={(e) => { e.preventDefault(); history.push('/profile');}}> 
                     <i className="fa fa-user-circle"></i> My Profile
                   </a>
-                  <button
-                    className="logout-button"
-                    onClick={handleLogout}
-                    disabled={loggingOut}
-                  >
-                    <i className="fa fa-sign-out"></i> {loggingOut ? 'Logging out...' : 'Logout'}
+                  <button className="logout-button" onClick={handleLogout} disabled={loggingOut || isSubmitting}>
+                    <i className={`fa ${loggingOut ? 'fa-spinner fa-spin' : 'fa-sign-out'}`}></i> {loggingOut ? 'Logging out...' : 'Logout'}
                   </button>
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-
-        <h1 className="page-title">Task Management</h1>
-
-        {error && (
-          <div className="error-message">
-            <p><i className="fa fa-exclamation-circle"></i> {error}</p>
-            <button onClick={() => setError(null)}>Dismiss</button>
-          </div>
-        )}
-
-        {/* Task Form */}
-        <div className="card task-form-card">
-          <h2 className="card-title">
-            <i className="fa fa-tasks"></i> {isEditing ? 'Edit Task' : 'Add New Task'}
-          </h2>
-          <div className="form-group">
-            <label htmlFor="taskTitle">Task Title:</label>
-            <input
-              id="taskTitle"
-              type="text"
-              value={taskText}
-              onChange={(e) => setTaskText(e.target.value)}
-              placeholder="What needs to be done?"
-              className="form-input"
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="taskDescription">Description (optional):</label>
-            <textarea
-              id="taskDescription"
-              value={taskDescription}
-              onChange={(e) => setTaskDescription(e.target.value)}
-              placeholder="Add details about this task..."
-              className="form-textarea"
-              rows="3"
-            />
-          </div>
-
-          <div className="form-row">
-            <div className="form-group half-width">
-              <label htmlFor="taskCategory">
-                <i className="fa fa-tag"></i> Category:
-              </label>
-              <input
-                id="taskCategory"
-                type="text"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                placeholder="e.g. Work, Personal"
-                className="form-input"
-              />
             </div>
+          )}
+        </header>
 
-            <div className="form-group half-width">
-              <label htmlFor="taskPriority">
-                <i className="fa fa-flag"></i> Priority:
-              </label>
-              <select
-                id="taskPriority"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
-                className="form-select"
-              >
-                <option value="">Select Priority</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
+        <main className="content-area">
+          <h1 className="page-title visually-hidden">Task Management</h1>
+
+          {error && (
+            <div className="error-message global-error">
+              <div>
+                <p><i className="fa fa-exclamation-circle"></i> {error.message}</p>
+                {error.details && <small className="error-details">{error.details}</small>}
+              </div>
+              <button onClick={() => setError(null)} aria-label="Dismiss error message">×</button>
             </div>
-          </div>
+          )}
 
-          <div className="form-group">
-            <label htmlFor="taskDueDate">
-              <i className="fa fa-calendar"></i> Due Date (optional):
-            </label>
-            <input
-              id="taskDueDate"
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              className="form-input"
-            />
-          </div>
-
-          <div className="button-group">
-            <button
-              className="button primary-button"
-              onClick={addTask}
-              disabled={!taskText.trim()}
-            >
-              <i className="fa fa-plus-circle"></i> {isEditing ? 'Update Task' : 'Add Task'}
-            </button>
-            {isEditing && (
-              <button
-                className="button secondary-button"
-                onClick={() => {
-                  setIsEditing(false);
-                  setTaskText('');
-                  setTaskDescription('');
-                  setCategory('');
-                  setPriority('');
-                  setDueDate('');
-                }}
-              >
-                <i className="fa fa-times-circle"></i> Cancel
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Filters UI */}
-        <div className="task-filters-container">
-          <div className="task-search">
-            <form onSubmit={handleSearch}>
-              <div className="search-input-container">
-                <i className="fa fa-search search-icon"></i>
+          <section className="card task-form-card" aria-labelledby="task-form-title">
+            <h2 id="task-form-title" className="card-title">
+              <i className="fa fa-pencil-square-o"></i> {isEditing ? 'Edit Task' : 'Add New Task'}
+            </h2>
+            <form onSubmit={(e) => { e.preventDefault(); handleAddTask(); }}>
+              <div className="form-group">
+                <label htmlFor="taskTitle">Task Title <span aria-hidden="true">*</span>:</label>
                 <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search tasks..."
-                  className="search-input"
+                  id="taskTitle" type="text" value={taskTitle}
+                  onChange={(e) => setTaskTitle(e.target.value)}
+                  placeholder="e.g., Finish project report" className="form-input" required
+                  aria-required="true"
                 />
-                <button type="submit" className="search-button" disabled={isFetching}>
-                  {isFetching ? 'Searching...' : 'Search'}
+              </div>
+              <div className="form-group">
+                <label htmlFor="taskDescription">Description:</label>
+                <textarea
+                  id="taskDescription" value={taskDescription}
+                  onChange={(e) => setTaskDescription(e.target.value)}
+                  placeholder="Add more details..." className="form-textarea" rows="3"
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group half-width">
+                  <label htmlFor="taskCategory"><i className="fa fa-tag" aria-hidden="true"></i> Category:</label>
+                  <input
+                    id="taskCategory" type="text" value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    placeholder="e.g., Work, Personal" className="form-input"
+                  />
+                </div>
+                <div className="form-group half-width">
+                  <label htmlFor="taskPriority"><i className="fa fa-flag" aria-hidden="true"></i> Priority:</label>
+                  <select
+                    id="taskPriority" value={priority}
+                    onChange={(e) => setPriority(e.target.value)} className="form-select"
+                  >
+                    <option value="">Default (Medium)</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+              </div>
+              <div className="form-group">
+                <label htmlFor="taskDueDate"><i className="fa fa-calendar" aria-hidden="true"></i> Due Date:</label>
+                <input
+                  id="taskDueDate" type="date" value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)} className="form-input"
+                  min={new Date().toISOString().split("T")[0]} // Optional: prevent past dates
+                />
+              </div>
+              <div className="button-row">
+                <button
+                  type="submit" className="button primary-button"
+                  disabled={isSubmitting || !taskTitle.trim()}
+                >
+                  <i className={`fa ${isSubmitting ? 'fa-spinner fa-spin' : (isEditing ? 'fa-save' : 'fa-plus-circle')}`}></i>
+                  {isSubmitting ? (isEditing ? 'Updating...' : 'Adding...') : (isEditing ? 'Update Task' : 'Add Task')}
                 </button>
+                {isEditing && (
+                  <button type="button" className="button secondary-button" onClick={clearFullForm} disabled={isSubmitting}>
+                    <i className="fa fa-times-circle"></i> Cancel Edit
+                  </button>
+                )}
               </div>
             </form>
-          </div>
+          </section>
 
-          <div className="filter-controls">
-            <div className="task-filter">
-              <span className="filter-label">Status: </span>
-              <div className="button-group">
-                <button
-                  className={`filter-button ${filter === 'all' ? 'active' : ''}`}
-                  onClick={() => setFilter('all')}
-                  disabled={isFetching}
-                >
-                  All
-                </button>
-                <button
-                  className={`filter-button ${filter === 'active' ? 'active' : ''}`}
-                  onClick={() => setFilter('active')}
-                  disabled={isFetching}
-                >
-                  <i className="fa fa-circle-o"></i> Active
-                </button>
-                <button
-                  className={`filter-button ${filter === 'completed' ? 'active' : ''}`}
-                  onClick={() => setFilter('completed')}
-                  disabled={isFetching}
-                >
-                  <i className="fa fa-check-circle"></i> Completed
+          <section className="view-toggle-container card" aria-label="View mode and filters">
+            <div className="view-toggle">
+              <button
+                className={`view-button ${viewMode === 'list' ? 'active' : ''}`}
+                onClick={() => setViewMode('list')}
+                disabled={isFetching || mainLoading} // Disable during any fetch/load
+                aria-pressed={viewMode === 'list'}
+              >
+                <i className="fa fa-list"></i> List View
+              </button>
+              <button
+                className={`view-button ${viewMode === 'kanban' ? 'active' : ''}`}
+                onClick={() => setViewMode('kanban')}
+                disabled={isFetching || mainLoading}
+                aria-pressed={viewMode === 'kanban'}
+              >
+                <i className="fa fa-columns"></i> Kanban View
+              </button>
+            </div>
+            
+            <div className="filter-controls">
+              <form onSubmit={handleSearchSubmit} className="search-form" role="search">
+                <div className="search-input-wrapper">
+                  <label htmlFor="searchQueryInput" className="visually-hidden">Search tasks</label>
+                  <input
+                    id="searchQueryInput" type="search" placeholder="Search tasks..."
+                    value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                    className="form-input search-input"
+                  />
+                  <button type="submit" className="search-button" disabled={isFetching || mainLoading} aria-label="Submit search">
+                    <i className="fa fa-search"></i>
+                  </button>
+                </div>
+              </form>
+              <div className="advanced-filters">
+                <div className="filter-group">
+                  <label htmlFor="filterStatus">Filter by Status:</label>
+                  <select
+                    id="filterStatus" value={filter}
+                    onChange={(e) => { setFilter(e.target.value); setPage(1);}}
+                    className="form-select filter-select"
+                    disabled={isFetching || mainLoading}
+                  >
+                    <option value="all">All (Active & Open)</option>
+                    <option value="active">Active Tasks</option>
+                    <option value="completed">Completed Tasks</option>
+                    {/* Add more specific statuses if needed, e.g., 'backlog', 'under-review' */}
+                  </select>
+                </div>
+               {viewMode === 'list' && ( // SortBy is more relevant for list view
+                <div className="filter-group">
+                    <label htmlFor="filterSort">Sort By:</label>
+                    <select
+                        id="filterSort" value={sortBy}
+                        onChange={(e) => { setSortBy(e.target.value); setPage(1);}}
+                        className="form-select filter-select"
+                        disabled={isFetching || mainLoading}
+                    >
+                        <option value="createdAt:desc">Newest First</option>
+                        <option value="createdAt:asc">Oldest First</option>
+                        <option value="title:asc">Title (A-Z)</option>
+                        <option value="title:desc">Title (Z-A)</option>
+                        <option value="priority:desc">Priority (High-Low)</option>
+                        <option value="priority:asc">Priority (Low-High)</option>
+                        <option value="dueDate:asc">Due Date (Earliest)</option>
+                        <option value="dueDate:desc">Due Date (Latest)</option>
+                    </select>
+                </div>
+                )}
+                <button className="button-link clear-filters-button" onClick={handleClearFiltersAndSearch} disabled={isFetching || mainLoading}>
+                  <i className="fa fa-times"></i> Clear Search & Filters
                 </button>
               </div>
             </div>
+          </section>
 
-            <div className="task-sort">
-              <label htmlFor="sortTasks" className="sort-label">
-                <i className="fa fa-sort"></i> Sort by:
-              </label>
-              <select
-                id="sortTasks"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="sort-select"
-                disabled={isFetching}
-              >
-                <option value="createdAt:desc">Newest First</option>
-                <option value="createdAt:asc">Oldest First</option>
-                <option value="dueDate:asc">Due Date (Soon First)</option>
-                <option value="title:asc">Title (A-Z)</option>
-                <option value="priority:desc">Priority (High-Low)</option>
-              </select>
-            </div>
-
-            <button
-              className="clear-filters-button"
-              onClick={handleClearFilters}
-              disabled={isFetching}
-            >
-              <i className="fa fa-refresh"></i> Clear Filters
-            </button>
-          </div>
-        </div>
-
-        {/* Loading and Empty States */}
-        {loading ? (
-          <div className="loading-state">
-            <div className="spinner"></div>
-            <p>Loading tasks...</p>
-          </div>
-        ) : (
-          <div className="task-list-container">
-            {tasks.length > 0 ? (
-              <div className="task-list">
-                {tasks.map((task) => (
-                  <Task
-                    key={task._id || task.id}
-                    task={task}
-                    onDelete={deleteTask}
-                    onEdit={editTask}
-                    onToggleComplete={toggleComplete}
-                  />
-                ))}
+          <div className="task-content-container">
+            {mainLoading ? (
+              <div className="loading-container main-loader">
+                <div className="loading-spinner">
+                  <i className="fa fa-spinner fa-spin fa-3x"></i>
+                  <p>Loading tasks...</p>
+                </div>
               </div>
             ) : (
-              <div className="empty-state">
-                <i className="fa fa-clipboard empty-icon"></i>
-                <p className="empty-message">No {filter !== 'all' ? filter : ''} tasks found.</p>
-                <p className="empty-action">{filter === 'all' ? 'Start by adding a task above!' : 'Try changing your filters or adding a new task.'}</p>
-              </div>
+              <>
+                {viewMode === 'kanban' ? (
+                  <div className="kanban-container">
+                    <TaskKanban
+                      tasks={tasks} // Ensure tasks are correctly filtered for Kanban if needed, or Kanban handles all open tasks
+                      onEdit={handleEditTask}
+                      onDelete={handleDeleteTask}
+                      onStatusChange={handleStatusChange}
+                      // Pass column order explicitly if TaskKanban expects it
+                      // columnOrder={[TASK_STATUSES.BACKLOG, TASK_STATUSES.ACTIVE, TASK_STATUSES.UNDER_REVIEW, TASK_STATUSES.COMPLETED]}
+                      isLoading={isFetching} // Pass fetching state for individual column loaders perhaps
+                    />
+                  </div>
+                ) : ( // List View
+                  <div className="list-container">
+                    <div className="task-stats">
+                      <span className="task-count total">
+                        <i className="fa fa-th-list"></i> {tasks.length} tasks displayed
+                      </span>
+                      <span className="task-count active">
+                        <i className="fa fa-clock-o"></i> {activeTaskCount} active
+                      </span>
+                      <span className="task-count completed">
+                        <i className="fa fa-check-square-o"></i> {completedTaskCount} completed
+                      </span>
+                    </div>
+                    {tasks.length === 0 ? (
+                       <div className="empty-state">
+                         <i className="fa fa-folder-open-o empty-icon fa-3x"></i>
+                         <p>{searchQuery || filter !== 'all' ? 'No tasks match your current filters.' : 'No tasks yet. Add one above to get started!'}</p>
+                         {(searchQuery || filter !== 'all') && (
+                            <button className="button secondary-button" onClick={handleClearFiltersAndSearch}>
+                                Clear Filters & Search
+                            </button>
+                         )}
+                       </div>
+                     ) : (
+                        <ul className="task-list">
+                            {tasks.map(task => (
+                            <Task
+                                key={task._id || task.id}
+                                task={task}
+                                onToggleComplete={() => handleToggleComplete(task._id || task.id)}
+                                onEdit={() => handleEditTask(task)}
+                                onDelete={() => handleDeleteTask(task._id || task.id)}
+                            />
+                            ))}
+                        </ul>
+                    )}
+                    {totalPages > 1 && viewMode === 'list' && (
+                      <nav className="pagination" aria-label="Task list navigation">
+                        <button
+                          className="pagination-button prev"
+                          onClick={() => handlePageChange(page - 1)}
+                          disabled={page === 1 || isFetching}
+                          aria-label="Go to previous page"
+                        >
+                          <i className="fa fa-chevron-left"></i> Previous
+                        </button>
+                        <div className="pagination-info" aria-live="polite" aria-atomic="true">Page {page} of {totalPages}</div>
+                        <button
+                          className="pagination-button next"
+                          onClick={() => handlePageChange(page + 1)}
+                          disabled={page === totalPages || isFetching}
+                          aria-label="Go to next page"
+                        >
+                          Next <i className="fa fa-chevron-right"></i>
+                        </button>
+                      </nav>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
-        )}
+        </main>
 
-        {/* Pagination */}
-        {tasks.length > 0 && (
-          <div className="pagination">
-            <button
-              disabled={page === 1 || isFetching}
-              onClick={() => handlePageChange(page - 1)}
-              className="pagination-button"
-            >
-              <i className="fa fa-chevron-left"></i> Previous
-            </button>
-            <span className="pagination-info">Page {page} of {totalPages}</span>
-            <button
-              disabled={page === totalPages || isFetching}
-              onClick={() => handlePageChange(page + 1)}
-              className="pagination-button"
-            >
-              Next <i className="fa fa-chevron-right"></i>
-            </button>
-          </div>
-        )}
-
-        {/* Task Summary */}
-        {tasks.length > 0 && (
-          <div className="task-summary">
-            <p><i className="fa fa-list-ul"></i> {activeTaskCount} tasks remaining</p>
-          </div>
-        )}
+        <footer className="app-footer">
+          <p>© {new Date().getFullYear()} TaskFlow App. All rights reserved.</p>
+          {/* Quick help could be a modal or a small expandable section */}
+          {/* <div className="quick-help-section"> ... </div> */}
+        </footer>
       </div>
     </>
   );
 };
 
-export default React.memo(TaskPage);
+export default TaskPage;

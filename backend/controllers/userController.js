@@ -24,6 +24,7 @@ const generateRefreshToken = (id) => {
  * @access  Public
  */
 const registerUser = async (req, res) => {
+  const startTime = Date.now();
   const { name, email, password } = req.body;
 
   // Basic input validation
@@ -31,9 +32,9 @@ const registerUser = async (req, res) => {
     return res.status(400).json({ message: 'Please provide name, email, and password' });
   }
   if (password.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters long' });
+    return res.status(400).json({ message: 'Password must be at least 8 characters long' });
   }
-  
+
   // Email format validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
@@ -41,8 +42,8 @@ const registerUser = async (req, res) => {
   }
 
   try {
-    // Check if user already exists
-    const userExists = await User.findOne({ email });
+    // Check if user already exists - use lean() for faster query
+    const userExists = await User.findOne({ email }).lean();
 
     if (userExists) {
       return res.status(400).json({ message: 'User with this email already exists' });
@@ -60,15 +61,16 @@ const registerUser = async (req, res) => {
       res.status(201).json({
         message: 'Registration successful. Please log in.',
         user: { // Send minimal non-sensitive info if needed
-             _id: user._id,
-             name: user.name,
-             email: user.email,
+          _id: user._id,
+          name: user.name,
+          email: user.email,
         }
       });
     } else {
       // This case might be redundant if User.create throws an error, but good for safety
       res.status(400).json({ message: 'Invalid user data during creation' });
     }
+    console.log(`Registration operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Registration Error:', error);
     res.status(500).json({
@@ -84,13 +86,15 @@ const registerUser = async (req, res) => {
  * @access  Public
  */
 const authUser = async (req, res) => {
+  const startTime = Date.now();
   const { email, password } = req.body;
 
   if (!email || !password) {
-      return res.status(400).json({ message: 'Please provide email and password' });
+    return res.status(400).json({ message: 'Please provide email and password' });
   }
 
   try {
+    // Use lean() for faster query when just checking if user exists
     const user = await User.findOne({ email });
 
     if (user && (await user.matchPassword(password))) {
@@ -114,11 +118,12 @@ const authUser = async (req, res) => {
           email: user.email,
         },
         token: accessToken, // Access Token
-        refreshToken: refreshToken // Send refresh token in body (also set in cookie)
+        // Don't send refresh token in body for security, only in cookie
       });
     } else {
       res.status(401).json({ message: 'Invalid email or password' });
     }
+    console.log(`Login operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Login Error:', error);
     res.status(500).json({
@@ -128,50 +133,50 @@ const authUser = async (req, res) => {
   }
 };
 
-
 /**
  * @desc    Refresh access token using refresh token
  * @route   POST /api/auth/refresh
  * @access  Public (requires valid refresh token)
  */
 const refreshToken = async (req, res) => {
-    // Try to get token from cookie first, then body
-    const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
+  const startTime = Date.now();
+  // Try to get token from cookie first, then body
+  const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
-    if (!refreshToken) {
-        return res.status(401).json({ message: 'Refresh token required' });
+  if (!refreshToken) {
+    return res.status(401).json({ message: 'Refresh token required' });
+  }
+
+  try {
+    // Verify the refresh token
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+
+    // Optionally: Check if the refresh token is still valid/not revoked in DB
+
+    // Use lean() for faster query when just checking if user exists
+    const user = await User.findById(decoded.id).select('_id').lean();
+
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid refresh token - user not found' });
     }
 
-    try {
-        // Verify the refresh token
-        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    // Generate a new access token
+    const newAccessToken = generateToken(user._id);
 
-        // Optionally: Check if the refresh token is still valid/not revoked in DB
-
-        const user = await User.findById(decoded.id).select('-password');
-
-        if (!user) {
-            return res.status(401).json({ message: 'Invalid refresh token - user not found' });
-        }
-
-        // Generate a new access token
-        const newAccessToken = generateToken(user._id);
-
-        res.json({
-            token: newAccessToken,
-            // Optionally issue a new refresh token for rotation
-            // refreshToken: generateRefreshToken(user._id)
-        });
-
-    } catch (error) {
-        console.error('Token Refresh Error:', error);
-        if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-            return res.status(403).json({ message: 'Invalid or expired refresh token' });
-        }
-        res.status(500).json({ message: 'Server error during token refresh' });
+    res.json({
+      token: newAccessToken,
+      // Optionally issue a new refresh token for rotation
+      // refreshToken: generateRefreshToken(user._id)
+    });
+    console.log(`Token refresh operation took ${Date.now() - startTime}ms`);
+  } catch (error) {
+    console.error('Token Refresh Error:', error);
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(403).json({ message: 'Invalid or expired refresh token' });
     }
+    res.status(500).json({ message: 'Server error during token refresh' });
+  }
 };
-
 
 /**
  * @desc    Logout user
@@ -179,6 +184,7 @@ const refreshToken = async (req, res) => {
  * @access  Private (Requires valid access token to identify user if needed, e.g., invalidate refresh token)
  */
 const logoutUser = async (req, res) => {
+  const startTime = Date.now();
   try {
     // Optional: Invalidate the refresh token on the server-side if stored
     // const { refreshToken } = req.body; // If sent from client
@@ -187,13 +193,14 @@ const logoutUser = async (req, res) => {
     // }
 
     // Clear refresh token cookie
-    res.clearCookie('refreshToken', { 
-      httpOnly: true, 
-      secure: process.env.NODE_ENV !== 'development', 
-      sameSite: 'strict' 
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV !== 'development',
+      sameSite: 'strict'
     });
 
     res.status(200).json({ message: 'Logged out successfully' });
+    console.log(`Logout operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Logout Error:', error);
     res.status(500).json({
@@ -209,17 +216,18 @@ const logoutUser = async (req, res) => {
  * @access  Public
  */
 const forgotPassword = async (req, res) => {
+  const startTime = Date.now();
   const { email } = req.body;
   if (!email) {
     return res.status(400).json({ message: 'Email is required' });
   }
-  
+
   // Email format validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({ message: 'Please provide a valid email address' });
   }
-  
+
   try {
     const user = await User.findOne({ email });
 
@@ -253,20 +261,20 @@ const forgotPassword = async (req, res) => {
     res.status(200).json({
       message: 'If an account with that email exists, password reset instructions have been sent.'
     });
-
+    console.log(`Forgot password operation took ${Date.now() - startTime}ms`);
   } catch (error) {
-      console.error('Forgot Password Error:', error);
-      // Attempt to clear potentially saved token info on error
-      try {
-          const user = await User.findOne({ email });
-          if (user && user.resetPasswordToken) {
-              user.resetPasswordToken = undefined;
-              user.resetPasswordExpire = undefined;
-              await user.save({ validateBeforeSave: false });
-          }
-      } catch (cleanupError) {
-          console.error('Error cleaning up reset token after failure:', cleanupError);
+    console.error('Forgot Password Error:', error);
+    // Attempt to clear potentially saved token info on error
+    try {
+      const user = await User.findOne({ email });
+      if (user && user.resetPasswordToken) {
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpire = undefined;
+        await user.save({ validateBeforeSave: false });
       }
+    } catch (cleanupError) {
+      console.error('Error cleaning up reset token after failure:', cleanupError);
+    }
     res.status(500).json({
       message: 'Server error during password reset request',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -280,6 +288,7 @@ const forgotPassword = async (req, res) => {
  * @access  Public
  */
 const validateResetToken = async (req, res) => {
+  const startTime = Date.now();
   const { token } = req.params;
 
   try {
@@ -301,8 +310,9 @@ const validateResetToken = async (req, res) => {
 
     // Token is valid
     res.status(200).json({ message: 'Token is valid' });
+    console.log(`Validate reset token operation took ${Date.now() - startTime}ms`);
   } catch (error) {
-     console.error('Validate Reset Token Error:', error);
+    console.error('Validate Reset Token Error:', error);
     res.status(500).json({
       message: 'Server error validating token',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -316,13 +326,14 @@ const validateResetToken = async (req, res) => {
  * @access  Public
  */
 const resetPassword = async (req, res) => {
+  const startTime = Date.now();
   const { token, newPassword } = req.body;
 
   if (!token || !newPassword) {
-      return res.status(400).json({ message: 'Token and new password are required' });
+    return res.status(400).json({ message: 'Token and new password are required' });
   }
   if (newPassword.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters long' });
+    return res.status(400).json({ message: 'Password must be at least 8 characters long' });
   }
 
   try {
@@ -353,7 +364,7 @@ const resetPassword = async (req, res) => {
 
     // Just confirm success and let them log in manually
     res.json({ message: 'Password reset successful. You can now log in with your new password.' });
-
+    console.log(`Reset password operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Reset Password Error:', error);
     res.status(500).json({
@@ -363,29 +374,30 @@ const resetPassword = async (req, res) => {
   }
 };
 
-
 /**
  * @desc    Get user profile
  * @route   GET /api/user/profile
  * @access  Private
  */
 const getUserProfile = async (req, res) => {
+  const startTime = Date.now();
   try {
     // req.user is populated by the auth middleware
     const user = await User.findById(req.user.id).select('-password'); // Use req.user.id
 
     if (user) {
       res.json({ // Structure consistently
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          createdAt: user.createdAt,
-          updatedAt: user.updatedAt
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
       });
     } else {
       // This case should be rare if token is valid but user deleted
       res.status(404).json({ message: 'User not found' });
     }
+    console.log(`Get profile operation took ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error('Get Profile Error:', error);
     res.status(500).json({
@@ -395,59 +407,59 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-
 /**
  * @desc    Update user profile
  * @route   PUT /api/user/profile
  * @access  Private
  */
 const updateUserProfile = async (req, res) => {
-    const { name, email } = req.body;
-    const userId = req.user.id;
+  const startTime = Date.now();
+  const { name, email } = req.body;
+  const userId = req.user.id;
 
-    try {
-        const user = await User.findById(userId);
+  try {
+    const user = await User.findById(userId);
 
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Check if email is changing and if it's already taken
-        if (email && email !== user.email) {
-            // Email format validation
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            if (!emailRegex.test(email)) {
-                return res.status(400).json({ message: 'Please provide a valid email address' });
-            }
-            
-            const emailExists = await User.findOne({ email });
-            if (emailExists) {
-                return res.status(400).json({ message: 'Email already in use' });
-            }
-            user.email = email;
-        }
-
-        if (name) {
-            user.name = name;
-        }
-
-        const updatedUser = await user.save();
-
-        res.json({
-            _id: updatedUser._id,
-            name: updatedUser.name,
-            email: updatedUser.email,
-            createdAt: updatedUser.createdAt,
-            updatedAt: updatedUser.updatedAt
-        });
-
-    } catch (error) {
-        console.error('Update Profile Error:', error);
-        res.status(500).json({ 
-            message: 'Error updating profile', 
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined 
-        });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
     }
+
+    // Check if email is changing and if it's already taken
+    if (email && email !== user.email) {
+      // Email format validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: 'Please provide a valid email address' });
+      }
+
+      const emailExists = await User.findOne({ email });
+      if (emailExists) {
+        return res.status(400).json({ message: 'Email already in use' });
+      }
+      user.email = email;
+    }
+
+    if (name) {
+      user.name = name;
+    }
+
+    const updatedUser = await user.save();
+
+    res.json({
+      _id: updatedUser._id,
+      name: updatedUser.name,
+      email: updatedUser.email,
+      createdAt: updatedUser.createdAt,
+      updatedAt: updatedUser.updatedAt
+    });
+    console.log(`Update profile operation took ${Date.now() - startTime}ms`);
+  } catch (error) {
+    console.error('Update Profile Error:', error);
+    res.status(500).json({
+      message: 'Error updating profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
 };
 
 /**
@@ -456,43 +468,43 @@ const updateUserProfile = async (req, res) => {
  * @access  Private
  */
 const changePassword = async (req, res) => {
-    const { currentPassword, newPassword } = req.body;
-    const userId = req.user.id;
+  const startTime = Date.now();
+  const { currentPassword, newPassword } = req.body;
+  const userId = req.user.id;
 
-    if (!currentPassword || !newPassword) {
-        return res.status(400).json({ message: 'Both current and new passwords are required' });
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ message: 'Both current and new passwords are required' });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ message: 'New password must be at least 8 characters long' });
+  }
+
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
     }
-    if (newPassword.length < 8) {
-        return res.status(400).json({ message: 'New password must be at least 8 characters long' });
+
+    // Check if current password matches
+    if (!(await user.matchPassword(currentPassword))) {
+      return res.status(401).json({ message: 'Incorrect current password' });
     }
 
-    try {
-        const user = await User.findById(userId);
+    // Set new password (hashing handled by pre-save hook)
+    user.password = newPassword;
+    await user.save();
 
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Check if current password matches
-        if (!(await user.matchPassword(currentPassword))) {
-            return res.status(401).json({ message: 'Incorrect current password' });
-        }
-
-        // Set new password (hashing handled by pre-save hook)
-        user.password = newPassword;
-        await user.save();
-
-        res.json({ message: 'Password changed successfully' });
-
-    } catch (error) {
-        console.error('Change Password Error:', error);
-        res.status(500).json({ 
-            message: 'Error changing password', 
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined 
-        });
-    }
+    res.json({ message: 'Password changed successfully' });
+    console.log(`Change password operation took ${Date.now() - startTime}ms`);
+  } catch (error) {
+    console.error('Change Password Error:', error);
+    res.status(500).json({
+      message: 'Error changing password',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
 };
-
 
 module.exports = {
   registerUser,

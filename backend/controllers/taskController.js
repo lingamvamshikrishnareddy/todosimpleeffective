@@ -1,71 +1,103 @@
-const Task = require('../models/Task');
+// backend/controllers/taskController.js
+const TaskModel = require('../models/Task'); // Import the model itself
+const { VALID_TASK_STATUSES, VALID_TASK_PRIORITIES } = TaskModel; // Destructure constants
+
+// Helper for consistent error responses
+const sendError = (res, statusCode, message, errorDetails = null) => {
+  const response = { success: false, message };
+  if (errorDetails && errorDetails.errors) {
+    const messages = Object.values(errorDetails.errors).map(err => err.message).join('; ');
+    response.detailedMessage = messages;
+  } else if (process.env.NODE_ENV === 'development' && errorDetails) {
+    response.error = errorDetails.message || errorDetails;
+  }
+  res.status(statusCode).json(response);
+};
 
 /**
- * Get all tasks with optional filtering
+ * Get all tasks with filtering, sorting, and pagination
  * @route GET /api/tasks
- * @access Private
+ * @access Private (requires authentication)
  */
 const getTasks = async (req, res) => {
   try {
-    // Support filtering by status or category
-    const filter = {};
-    
-    if (req.query.status) {
-      filter.status = req.query.status;
+    const filter = { user: req.user.id };
+
+    if (req.query.status && req.query.status !== 'all') {
+      if (req.query.status === 'active') {
+        filter.status = { $nin: ['completed', 'archived'] }; // Shows 'backlog', 'active', 'under-review'
+      } else if (VALID_TASK_STATUSES.includes(req.query.status)) {
+        filter.status = req.query.status;
+      }
     }
-    
+
     if (req.query.category) {
-      filter.category = req.query.category;
+      filter.category = new RegExp(req.query.category, 'i');
     }
-    
-    // Support searching by title or description
+
+    if (req.query.priority && VALID_TASK_PRIORITIES.includes(req.query.priority)) {
+      filter.priority = req.query.priority;
+    }
+
+    if (req.query.dueDate) {
+      const dueDate = new Date(req.query.dueDate);
+      if (!isNaN(dueDate.getTime())) {
+        filter.dueDate = {
+          $gte: new Date(dueDate.setHours(0, 0, 0, 0)),
+          $lt: new Date(new Date(dueDate).setHours(23, 59, 59, 999)),
+        };
+      }
+    }
+
     if (req.query.search) {
+      const searchRegex = new RegExp(req.query.search, 'i');
       filter.$or = [
-        { title: { $regex: req.query.search, $options: 'i' } },
-        { description: { $regex: req.query.search, $options: 'i' } }
+        { title: searchRegex },
+        { description: searchRegex },
+        { category: searchRegex },
       ];
     }
-    
-    // Add user filtering for multi-user support
-    if (req.user) {
-      filter.user = req.user.id;
-    }
-    
-    // Support pagination
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
     const skip = (page - 1) * limit;
-    
-    // Support sorting
+
     const sort = {};
     if (req.query.sortBy) {
       const parts = req.query.sortBy.split(':');
-      sort[parts[0]] = parts[1] === 'desc' ? -1 : 1;
+      const allowedSortFields = ['title', 'createdAt', 'updatedAt', 'dueDate', 'priority', 'status'];
+      if (allowedSortFields.includes(parts[0])) {
+        sort[parts[0]] = parts[1] === 'desc' ? -1 : 1;
+        if (parts[0] !== 'createdAt' && parts[0] !== '_id') {
+          sort.createdAt = -1;
+        }
+      }
     } else {
-      // Default sort by creation date (newest first)
-      sort.createdAt = -1;
+      sort.createdAt = -1; // Default sort: newest first
     }
-    
-    const tasks = await Task.find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit);
-      
-    // Get total count for pagination
-    const totalTasks = await Task.countDocuments(filter);
-    
+
+    const [tasks, totalTasks] = await Promise.all([
+      TaskModel.find(filter).sort(sort).skip(skip).limit(limit).lean(),
+      TaskModel.countDocuments(filter),
+    ]);
+
+    const totalPages = Math.ceil(totalTasks / limit);
+
     res.json({
+      success: true,
       tasks,
       pagination: {
         total: totalTasks,
         page,
-        pages: Math.ceil(totalTasks / limit),
-        limit
-      }
+        pages: totalPages,
+        limit,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
     });
   } catch (error) {
     console.error('Error fetching tasks:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    sendError(res, 500, 'Server error while fetching tasks', error);
   }
 };
 
@@ -76,29 +108,51 @@ const getTasks = async (req, res) => {
  */
 const createTask = async (req, res) => {
   try {
-    const { title, description, category, dueDate, priority } = req.body;
-    
-    // Validate required fields
-    if (!title) {
-      return res.status(400).json({ message: 'Title is required' });
+    const { title, description, category, dueDate, priority, status } = req.body;
+
+    if (!title || typeof title !== 'string' || title.trim().length === 0) {
+      return sendError(res, 400, 'Title is required.');
     }
-    
-    // Create new task object
-    const task = new Task({
-      title,
-      description,
-      status: 'active',
-      user: req.user ? req.user.id : null,
-      category,
-      dueDate: dueDate ? new Date(dueDate) : null,
-      priority: priority || 'medium'
-    });
-    
+
+    if (status && !VALID_TASK_STATUSES.includes(status)) {
+      return sendError(res, 400, `Invalid status. Must be one of: ${VALID_TASK_STATUSES.join(', ')}`);
+    }
+ 
+    if (priority && !VALID_TASK_PRIORITIES.includes(priority)) {
+      return sendError(res, 400, `Invalid priority. Must be one of: ${VALID_TASK_PRIORITIES.join(', ')}`);
+    }
+
+    const taskData = {
+      title: title.trim(),
+      user: req.user.id,
+      description: description ? description.trim() : undefined,
+      category: category ? category.trim() : undefined,
+      // CRITICAL: Defaults to 'active' if status is not provided or is falsy.
+      // This addresses the Kanban issue where new tasks might default to 'backlog'
+      // if the schema default was 'backlog' and frontend sent no status.
+      status: status || 'active', 
+      ...(priority && VALID_TASK_PRIORITIES.includes(priority) && { priority }), // Uses schema default if not provided
+    };
+
+    if (dueDate) {
+      const parsedDueDate = new Date(dueDate);
+      if (!isNaN(parsedDueDate.getTime())) {
+        taskData.dueDate = parsedDueDate;
+      } else {
+        return sendError(res, 400, 'Invalid due date format.');
+      }
+    }
+
+    const task = new TaskModel(taskData);
     const createdTask = await task.save();
-    res.status(201).json(createdTask);
+
+    res.status(201).json({ success: true, task: createdTask });
   } catch (error) {
     console.error('Error creating task:', error);
-    res.status(500).json({ message: 'Failed to create task', error: error.message });
+    if (error.name === 'ValidationError') {
+      return sendError(res, 400, 'Validation failed.', error);
+    }
+    sendError(res, 500, 'Failed to create task', error);
   }
 };
 
@@ -109,26 +163,19 @@ const createTask = async (req, res) => {
  */
 const getTaskById = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
-    
+    const task = await TaskModel.findOne({ _id: req.params.id, user: req.user.id }).lean();
+
     if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found or not authorized.');
     }
-    
-    // Check if task belongs to current user
-    if (req.user && task.user && task.user.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to access this task' });
-    }
-    
-    res.json(task);
+
+    res.json({ success: true, task });
   } catch (error) {
-    console.error('Error fetching task:', error);
-    
+    console.error('Error fetching task by ID:', error);
     if (error.kind === 'ObjectId') {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found (invalid ID format).');
     }
-    
-    res.status(500).json({ message: 'Server error', error: error.message });
+    sendError(res, 500, 'Server error while fetching task', error);
   }
 };
 
@@ -140,40 +187,102 @@ const getTaskById = async (req, res) => {
 const updateTask = async (req, res) => {
   try {
     const { title, description, status, category, dueDate, priority } = req.body;
+    const taskId = req.params.id;
+
+    const updates = {};
     
-    // Find task by ID
-    const task = await Task.findById(req.params.id);
-    
-    if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+    if (title !== undefined) {
+      if (!title || typeof title !== 'string' || title.trim().length === 0) {
+        return sendError(res, 400, 'Title cannot be empty.');
+      }
+      updates.title = title.trim();
     }
     
-    // Check if task belongs to current user
-    if (req.user && task.user && task.user.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to update this task' });
+    if (description !== undefined) updates.description = description ? description.trim() : '';
+    if (category !== undefined) updates.category = category ? category.trim() : '';
+    
+    if (priority !== undefined) {
+      if (priority === '' || priority === null) { // Allow clearing priority to default
+        updates.priority = TaskModel.schema.path('priority').defaultValue;
+      } else if (!VALID_TASK_PRIORITIES.includes(priority)) {
+        return sendError(res, 400, `Invalid priority. Must be one of: ${VALID_TASK_PRIORITIES.join(', ')}`);
+      } else {
+        updates.priority = priority;
+      }
+    }
+
+    if (status !== undefined) {
+      if (!VALID_TASK_STATUSES.includes(status)) {
+        return sendError(res, 400, `Invalid status. Must be one of: ${VALID_TASK_STATUSES.join(', ')}`);
+      }
+      updates.status = status;
+      
+      if (status === 'completed') {
+        updates.completedAt = new Date();
+      } else {
+        // Ensure completedAt is unset if task is moved out of 'completed'
+        updates.completedAt = null; 
+        updates.$unset = updates.$unset || {}; // Ensure $unset exists
+        updates.$unset.completedAt = 1; // Mongoose way to remove a field
+      }
     }
     
-    // Update task fields
-    if (title !== undefined) task.title = title;
-    if (description !== undefined) task.description = description;
-    if (status !== undefined) task.status = status;
-    if (category !== undefined) task.category = category;
-    if (dueDate !== undefined) task.dueDate = dueDate ? new Date(dueDate) : null;
-    if (priority !== undefined) task.priority = priority;
+    if (dueDate !== undefined) {
+      if (dueDate === null || dueDate === '') {
+        updates.dueDate = null;
+        updates.$unset = updates.$unset || {};
+        updates.$unset.dueDate = 1;
+      } else {
+        const parsedDueDate = new Date(dueDate);
+        if (!isNaN(parsedDueDate.getTime())) {
+          updates.dueDate = parsedDueDate;
+        } else {
+          return sendError(res, 400, 'Invalid due date format.');
+        }
+      }
+    }
+
+    if (Object.keys(updates).length === 0 && !(updates.$unset && Object.keys(updates.$unset).length > 0)) {
+      // If no actual updates, fetch and return current task to avoid unnecessary write
+      const task = await TaskModel.findOne({ _id: taskId, user: req.user.id }).lean();
+      if (!task) return sendError(res, 404, 'Task not found or not authorized.');
+      return res.json({ success: true, task });
+    }
+
+    updates.updatedAt = new Date(); // Explicitly set updatedAt
+
+    // Handle $unset separately if needed, or combine with $set
+    const updateOperation = { $set: {} };
+    for (const key in updates) {
+        if (key === '$unset') {
+            updateOperation.$unset = updates.$unset;
+        } else {
+            updateOperation.$set[key] = updates[key];
+        }
+    }
+    // If $unset was the only operation, ensure $set is not empty or handle it.
+    // For simplicity, Mongoose handles $set with $unset together well.
+
+    const updatedTask = await TaskModel.findOneAndUpdate(
+      { _id: taskId, user: req.user.id },
+      updateOperation,
+      { new: true, runValidators: true, lean: true }
+    );
     
-    // Update timestamps
-    task.updatedAt = Date.now();
-    
-    const updatedTask = await task.save();
-    res.json(updatedTask);
+    if (!updatedTask) {
+      return sendError(res, 404, 'Task not found, not authorized, or update failed.');
+    }
+
+    res.json({ success: true, task: updatedTask });
   } catch (error) {
     console.error('Error updating task:', error);
-    
     if (error.kind === 'ObjectId') {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found (invalid ID format).');
     }
-    
-    res.status(500).json({ message: 'Failed to update task', error: error.message });
+    if (error.name === 'ValidationError') {
+      return sendError(res, 400, 'Validation failed.', error);
+    }
+    sendError(res, 500, 'Failed to update task', error);
   }
 };
 
@@ -184,27 +293,19 @@ const updateTask = async (req, res) => {
  */
 const deleteTask = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
-    
+    const task = await TaskModel.findOneAndDelete({ _id: req.params.id, user: req.user.id });
+
     if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found or not authorized.');
     }
-    
-    // Check if task belongs to current user
-    if (req.user && task.user && task.user.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to delete this task' });
-    }
-    
-    await Task.deleteOne({ _id: req.params.id });
-    res.json({ message: 'Task removed successfully', id: req.params.id });
+
+    res.json({ success: true, message: 'Task removed successfully', id: req.params.id });
   } catch (error) {
     console.error('Error deleting task:', error);
-    
     if (error.kind === 'ObjectId') {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found (invalid ID format).');
     }
-    
-    res.status(500).json({ message: 'Failed to delete task', error: error.message });
+    sendError(res, 500, 'Failed to delete task', error);
   }
 };
 
@@ -215,178 +316,215 @@ const deleteTask = async (req, res) => {
  */
 const toggleTaskStatus = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
-    
+    const task = await TaskModel.findOne({ _id: req.params.id, user: req.user.id });
+
     if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found or not authorized.');
     }
-    
-    // Check if task belongs to current user
-    if (req.user && task.user && task.user.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to update this task' });
+
+    if (task.status === 'completed') {
+      task.status = 'active'; // Or a more sophisticated logic to return to previous non-completed state
+      task.completedAt = null;
+    } else {
+      task.status = 'completed';
+      task.completedAt = new Date();
     }
-    
-    // Toggle between 'active' and 'completed'
-    task.status = task.status === 'completed' ? 'active' : 'completed';
-    task.completedAt = task.status === 'completed' ? Date.now() : null;
-    task.updatedAt = Date.now();
-    
+
+    task.updatedAt = new Date();
     const updatedTask = await task.save();
-    res.json(updatedTask);
+    
+    res.json({ success: true, task: updatedTask.toObject() }); // .toObject() for lean-like result
   } catch (error) {
     console.error('Error toggling task status:', error);
-    
     if (error.kind === 'ObjectId') {
-      return res.status(404).json({ message: 'Task not found' });
+      return sendError(res, 404, 'Task not found (invalid ID format).');
     }
-    
-    res.status(500).json({ message: 'Failed to update task status', error: error.message });
+    if (error.name === 'ValidationError') {
+      return sendError(res, 400, 'Validation failed while toggling status.', error);
+    }
+    sendError(res, 500, 'Failed to toggle task status', error);
   }
 };
 
 /**
- * Bulk update multiple tasks
- * @route PATCH /api/tasks/bulk
+ * Search tasks (uses getTasks internally)
+ * @route GET /api/tasks/search
  * @access Private
  */
-const bulkUpdateTasks = async (req, res) => {
-  try {
-    const { taskIds, updates } = req.body;
-    
-    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
-      return res.status(400).json({ message: 'Task IDs array is required' });
-    }
-    
-    if (!updates || Object.keys(updates).length === 0) {
-      return res.status(400).json({ message: 'Updates object is required' });
-    }
-    
-    // Filter tasks that belong to the current user
-    const userFilter = req.user ? { user: req.user.id } : {};
-    
-    // Perform the bulk update
-    const updateResult = await Task.updateMany(
-      { _id: { $in: taskIds }, ...userFilter },
-      { $set: { ...updates, updatedAt: Date.now() } }
-    );
-    
-    res.json({
-      message: 'Tasks updated successfully',
-      modifiedCount: updateResult.modifiedCount,
-      taskIds
-    });
-  } catch (error) {
-    console.error('Error bulk updating tasks:', error);
-    res.status(500).json({ message: 'Failed to update tasks', error: error.message });
+const searchTasks = async (req, res) => {
+  if (!req.query.search) {
+    return sendError(res, 400, 'Search term is required for /tasks/search.');
   }
+  // Allow overriding limit for search results, default to a reasonable number
+  req.query.limit = req.query.limit || 20; 
+  return getTasks(req, res); // Leverage the main getTasks function
 };
 
 /**
- * Bulk delete multiple tasks
- * @route DELETE /api/tasks/bulk
- * @access Private
- */
-const bulkDeleteTasks = async (req, res) => {
-  try {
-    const { taskIds } = req.body;
-    
-    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
-      return res.status(400).json({ message: 'Task IDs array is required' });
-    }
-    
-    // Filter tasks that belong to the current user
-    const userFilter = req.user ? { user: req.user.id } : {};
-    
-    // Perform the bulk delete
-    const deleteResult = await Task.deleteMany({
-      _id: { $in: taskIds },
-      ...userFilter
-    });
-    
-    res.json({
-      message: 'Tasks deleted successfully',
-      deletedCount: deleteResult.deletedCount,
-      taskIds
-    });
-  } catch (error) {
-    console.error('Error bulk deleting tasks:', error);
-    res.status(500).json({ message: 'Failed to delete tasks', error: error.message });
-  }
-};
-
-/**
- * Get task statistics for the current user
+ * Get task statistics
  * @route GET /api/tasks/stats
  * @access Private
  */
 const getTaskStats = async (req, res) => {
   try {
-    // Filter by user if authenticated
-    const userFilter = req.user ? { user: req.user.id } : {};
+    const userFilter = { user: req.user.id };
+
+    const totalPromise = TaskModel.countDocuments(userFilter);
     
-    // Get counts by status
-    const statusCounts = await Task.aggregate([
+    const statusCountsPromise = TaskModel.aggregate([
       { $match: userFilter },
-      { $group: { _id: '$status', count: { $sum: 1 } } }
+      { $group: { _id: '$status', count: { $sum: 1 } } },
     ]);
-    
-    // Get counts by category
-    const categoryCounts = await Task.aggregate([
-      { $match: { ...userFilter, category: { $exists: true, $ne: '' } } },
-      { $group: { _id: '$category', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 5 } // Get top 5 categories
-    ]);
-    
-    // Get counts by priority
-    const priorityCounts = await Task.aggregate([
+
+    const priorityCountsPromise = TaskModel.aggregate([
       { $match: userFilter },
       { $group: { _id: '$priority', count: { $sum: 1 } } }
     ]);
-    
-    // Get upcoming due tasks
-    const now = new Date();
-    const upcomingDue = await Task.find({
+
+    const upcomingDuePromise = TaskModel.find({
       ...userFilter,
-      status: 'active',
-      dueDate: { $exists: true, $ne: null, $gte: now }
-    })
-    .sort({ dueDate: 1 })
-    .limit(5);
-    
-    // Format status counts
+      status: { $nin: ['completed', 'archived'] },
+      dueDate: { $exists: true, $ne: null, $gte: new Date() }
+    }).sort({ dueDate: 1 }).limit(5).lean();
+
+    const [total, statusCountsResult, priorityCountsResult, upcomingDue] = await Promise.all([
+      totalPromise, statusCountsPromise, priorityCountsPromise, upcomingDuePromise
+    ]);
+
     const stats = {
-      total: await Task.countDocuments(userFilter),
-      byStatus: statusCounts.reduce((acc, item) => {
-        acc[item._id || 'unspecified'] = item.count;
-        return acc;
-      }, {}),
-      byCategory: categoryCounts.reduce((acc, item) => {
-        acc[item._id || 'unspecified'] = item.count;
-        return acc;
-      }, {}),
-      byPriority: priorityCounts.reduce((acc, item) => {
-        acc[item._id || 'unspecified'] = item.count;
-        return acc;
-      }, {}),
-      upcomingDue
+      total,
+      byStatus: VALID_TASK_STATUSES.reduce((acc, st) => ({ ...acc, [st]: 0 }), {}),
+      byPriority: VALID_TASK_PRIORITIES.reduce((acc, p) => ({ ...acc, [p]: 0 }), {}),
+      upcomingDue,
     };
+
+    statusCountsResult.forEach(item => { 
+      if (stats.byStatus.hasOwnProperty(item._id)) {
+        stats.byStatus[item._id] = item.count; 
+      }
+    });
     
-    res.json(stats);
+    priorityCountsResult.forEach(item => { 
+      if (stats.byPriority.hasOwnProperty(item._id)) {
+        stats.byPriority[item._id] = item.count; 
+      }
+    });
+    
+    res.json({ success: true, stats });
   } catch (error) {
     console.error('Error getting task stats:', error);
-    res.status(500).json({ message: 'Failed to get task statistics', error: error.message });
+    sendError(res, 500, 'Failed to get task statistics', error);
+  }
+};
+
+/**
+ * Bulk update multiple tasks
+ * @route PUT /api/tasks/bulk-update
+ * @access Private
+ */
+const bulkUpdateTasks = async (req, res) => {
+  try {
+    const { taskIds, updateData } = req.body;
+
+    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+      return sendError(res, 400, 'Task IDs array is required and must not be empty.');
+    }
+    if (!updateData || typeof updateData !== 'object' || Object.keys(updateData).length === 0) {
+      return sendError(res, 400, 'Update data object is required and must not be empty.');
+    }
+
+    const updatesToApply = { ...updateData };
+    
+    if (updatesToApply.status && !VALID_TASK_STATUSES.includes(updatesToApply.status)) {
+      return sendError(res, 400, `Invalid status. Must be one of: ${VALID_TASK_STATUSES.join(', ')}`);
+    }
+    if (updatesToApply.priority && !VALID_TASK_PRIORITIES.includes(updatesToApply.priority)) {
+      return sendError(res, 400, `Invalid priority. Must be one of: ${VALID_TASK_PRIORITIES.join(', ')}`);
+    }
+
+    updatesToApply.updatedAt = new Date();
+    if (updatesToApply.status === 'completed') {
+      updatesToApply.completedAt = new Date();
+    } else if (updatesToApply.status && updatesToApply.status !== 'completed') {
+      // If changing status to non-completed, ensure completedAt is removed
+      updatesToApply.$unset = { completedAt: 1 };
+    }
+
+
+    const operation = { $set: updatesToApply };
+    if (updatesToApply.$unset) {
+        operation.$unset = updatesToApply.$unset;
+        delete updatesToApply.$unset; // remove from $set
+    }
+
+
+    const result = await TaskModel.updateMany(
+      { _id: { $in: taskIds }, user: req.user.id },
+      operation,
+      { runValidators: true } // Mongoose updateMany doesn't run validators by default on sub-documents or paths, but direct paths in $set are validated.
+    );
+
+    if (result.matchedCount === 0) {
+      return sendError(res, 404, 'No matching tasks found for bulk update or not authorized.');
+    }
+
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} tasks updated successfully. ${result.matchedCount} tasks matched.`,
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error('Error bulk updating tasks:', error);
+     if (error.name === 'ValidationError') { // Catch validation errors if runValidators works as expected
+      return sendError(res, 400, 'Validation failed during bulk update.', error);
+    }
+    sendError(res, 500, 'Failed to bulk update tasks', error);
+  }
+};
+
+/**
+ * Bulk delete multiple tasks
+ * @route DELETE /api/tasks/bulk-delete
+ * @access Private
+ */
+const bulkDeleteTasks = async (req, res) => {
+  try {
+    const { taskIds } = req.body; 
+
+    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+      return sendError(res, 400, 'Task IDs array is required and must not be empty.');
+    }
+
+    const result = await TaskModel.deleteMany({
+      _id: { $in: taskIds },
+      user: req.user.id,
+    });
+
+    if (result.deletedCount === 0) {
+      return sendError(res, 404, 'No matching tasks found for bulk delete or not authorized.');
+    }
+
+    res.json({
+      success: true,
+      message: `${result.deletedCount} tasks deleted successfully.`,
+      deletedCount: result.deletedCount,
+    });
+  } catch (error) {
+    console.error('Error bulk deleting tasks:', error);
+    sendError(res, 500, 'Failed to bulk delete tasks', error);
   }
 };
 
 module.exports = {
   getTasks,
-  getTaskById,
   createTask,
+  getTaskById,
   updateTask,
   deleteTask,
   toggleTaskStatus,
+  searchTasks,
+  getTaskStats,
   bulkUpdateTasks,
   bulkDeleteTasks,
-  getTaskStats
 };

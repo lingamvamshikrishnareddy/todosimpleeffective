@@ -8,42 +8,28 @@ const {
   updateTask,
   deleteTask,
   toggleTaskStatus,
-  bulkUpdateTasks, // Import bulk methods
-  bulkDeleteTasks, // Import bulk methods
-  getTaskStats     // Import stats method
+  bulkUpdateTasks,
+  bulkDeleteTasks,
+  getTaskStats,
+  searchTasks // Assuming you have this exported from controller
 } = require('../controllers/taskController');
-const auth = require('../middleware/authMiddleware'); // Your authentication middleware
+const auth = require('../middleware/authMiddleware');
 
-// Apply auth middleware to all task routes
-router.use(auth);
+router.use(auth); // Apply auth middleware to all task routes
 
-// GET all tasks for the logged-in user (with filtering, sorting, pagination)
 router.get('/', getTasks);
-
-// POST create a new task for the logged-in user
 router.post('/', createTask);
 
-// GET task statistics for the logged-in user
-router.get('/stats', getTaskStats); // Add route for stats
+router.get('/stats', getTaskStats);
+router.get('/search', searchTasks); // Add route for dedicated search if used by TaskAPI
 
-// PATCH bulk update tasks for the logged-in user
-router.patch('/bulk', bulkUpdateTasks); // Add route for bulk update
+// Corrected bulk operation routes
+router.put('/bulk-update', bulkUpdateTasks); // Changed from PATCH /bulk
+router.delete('/bulk-delete', bulkDeleteTasks); // Changed from DELETE /bulk
 
-// DELETE bulk delete tasks for the logged-in user
-router.delete('/bulk', bulkDeleteTasks); // Add route for bulk delete
-
-// --- Routes for specific task ID ---
-
-// GET a single task by ID (user-specific check done in controller)
 router.get('/:id', getTaskById);
-
-// PUT update a task by ID (user-specific check done in controller)
 router.put('/:id', updateTask);
-
-// DELETE remove a task by ID (user-specific check done in controller)
 router.delete('/:id', deleteTask);
-
-// PATCH toggle task completion status by ID (user-specific check done in controller)
 router.patch('/:id/toggle', toggleTaskStatus);
 
 module.exports = router;
