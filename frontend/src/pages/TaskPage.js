@@ -7,13 +7,11 @@ import api from '../services/api'; // Assuming path
 import './TaskPage.css'; // Assuming path
 
 const DEBOUNCE_DELAY = 300;
-const VALID_TASK_STATUSES_ARRAY = ['backlog', 'active', 'under-review', 'completed', 'archived'];
+const VALID_TASK_STATUSES_ARRAY = ['active', 'completed', 'archived'];
 const DEFAULT_ACTIVE_STATUS = 'active';
 
 const TASK_STATUSES = {
-  BACKLOG: 'backlog',
   ACTIVE: 'active',
-  UNDER_REVIEW: 'under-review',
   COMPLETED: 'completed',
   ARCHIVED: 'archived',
 };
@@ -37,12 +35,12 @@ const TaskPage = () => {
   const [sortBy, setSortBy] = useState('createdAt:desc');
   const [userProfile, setUserProfile] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [isFetching, setIsFetching] = useState(false); // For UI feedback during fetch
-  const [viewMode, setViewMode] = useState('kanban'); // Default to Kanban
+  const [isFetching, setIsFetching] = useState(false);
+  const [viewMode, setViewMode] = useState('kanban');
   
   const history = useHistory();
   const debounceTimeoutRef = useRef(null);
-  const fetchingGuardRef = useRef(false); // Prevents re-entrant executeFetch calls
+  const fetchingGuardRef = useRef(false);
 
   const parseApiError = (err, defaultMessage = 'An unexpected error occurred.') => {
     let message = defaultMessage;
@@ -81,25 +79,36 @@ const TaskPage = () => {
   const getStatusQueryParam = useCallback(() => {
     if (filter === 'completed') return 'completed';
     if (filter === 'active') return 'active';
-    return ''; // 'all', fetches all non-archived unless backend logic changes
+    return '';
   }, [filter]);
 
+  // Filter tasks based on search query
+  const filteredTasks = useMemo(() => {
+    if (!searchQuery.trim()) return tasks;
+    
+    const query = searchQuery.toLowerCase().trim();
+    return tasks.filter(task => 
+      task.title?.toLowerCase().includes(query) ||
+      task.description?.toLowerCase().includes(query) ||
+      task.category?.toLowerCase().includes(query)
+    );
+  }, [tasks, searchQuery]);
+
   const queryParams = useMemo(() => ({
-    page: viewMode === 'list' ? page : 1, // Kanban always loads page 1 (all relevant tasks)
-    limit: viewMode === 'kanban' ? 100 : 10, // Kanban might need more tasks
+    page: viewMode === 'list' ? page : 1,
+    limit: viewMode === 'kanban' ? 100 : 10,
     status: getStatusQueryParam(),
     category: category || undefined,
-    search: searchQuery || undefined,
-    sortBy, // SortBy might be less relevant for Kanban if it has its own ordering
+    sortBy,
     priority: priority || undefined,
     dueDate: dueDate || undefined,
-  }), [page, viewMode, getStatusQueryParam, category, searchQuery, sortBy, priority, dueDate]);
+  }), [page, viewMode, getStatusQueryParam, category, sortBy, priority, dueDate]);
 
   const executeFetch = useCallback(async (showMainLoadingSpinner = true) => {
-    if (fetchingGuardRef.current) return; // Prevent re-entrant calls
+    if (fetchingGuardRef.current) return;
 
     fetchingGuardRef.current = true;
-    setIsFetching(true); // For UI feedback like disabling buttons
+    setIsFetching(true);
     if (showMainLoadingSpinner) setMainLoading(true);
     setError(null);
 
@@ -109,10 +118,10 @@ const TaskPage = () => {
       if (viewMode === 'list') {
         setTotalPages(response.pagination?.pages || 1);
         if (page > (response.pagination?.pages || 1) && (response.pagination?.pages || 1) > 0) {
-            setPage(response.pagination.pages); // Adjust if current page is out of bounds
+            setPage(response.pagination.pages);
         }
       } else {
-        setTotalPages(1); // Kanban loads all relevant, so effectively 1 page
+        setTotalPages(1);
       }
     } catch (err) {
       console.error('Error fetching tasks:', err);
@@ -124,23 +133,29 @@ const TaskPage = () => {
       setIsFetching(false);
       fetchingGuardRef.current = false;
     }
-  }, [queryParams, history, viewMode, page]); // Added viewMode and page
+  }, [queryParams, history, viewMode, page]);
 
+  // Debounced search effect
   useEffect(() => {
     if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
     debounceTimeoutRef.current = setTimeout(() => {
-      executeFetch(true); // Show main loading spinner on debounced fetches
+      if (searchQuery.trim()) {
+        // For search, we work with local filtering instead of API call
+        return;
+      }
+      executeFetch(true);
     }, DEBOUNCE_DELAY);
     return () => { if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current); };
-  }, [executeFetch]); // executeFetch is the dependency
+  }, [executeFetch, searchQuery]);
+
+  // Initial fetch and filter changes
+  useEffect(() => {
+    executeFetch(true);
+  }, [filter, category, priority, dueDate, sortBy, page, viewMode]);
 
   const resetForm = useCallback(() => {
     setTaskTitle('');
     setTaskDescription('');
-    // Do not reset category, priority, dueDate from form on cancel, only on successful add/edit
-    // setCategory(''); 
-    // setPriority('');
-    // setDueDate('');
     setIsEditing(false);
     setCurrentTaskId(null);
   }, []);
@@ -154,7 +169,6 @@ const TaskPage = () => {
     setIsEditing(false);
     setCurrentTaskId(null);
   }, []);
-
 
   const handleAddTask = async () => {
     if (taskTitle.trim() === '') {
@@ -170,7 +184,6 @@ const TaskPage = () => {
       category: category || undefined,
       priority: priority || undefined,
       dueDate: dueDate || undefined,
-      // status is NOT sent; backend will default to 'active'
     };
 
     try {
@@ -179,12 +192,9 @@ const TaskPage = () => {
         setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === currentTaskId ? response.task : t));
       } else {
         const response = await api.tasks.createTask(taskPayload);
-        // Add to local state optimistically (new task should have 'active' status from backend)
         setTasks(prevTasks => [response.task, ...prevTasks]);
       }
-      clearFullForm(); // Clear all form fields after successful operation
-      // No full executeFetch here to avoid jarring reload. UI updates optimistically.
-      // If specific data like total counts needs refresh, consider a targeted fetch or backend returning updated counts.
+      clearFullForm();
     } catch (err) {
       console.error('Error saving task:', err);
       setError(parseApiError(err, `Failed to ${isEditing ? 'update' : 'create'} task.`));
@@ -198,16 +208,13 @@ const TaskPage = () => {
     
     const originalTasks = [...tasks];
     setTasks(prevTasks => prevTasks.filter(task => (task._id || task.id) !== taskId));
-    // No isSubmitting state for delete, it's per-task
     setError(null);
 
     try {
       await api.tasks.deleteTask(taskId);
-      // Optionally, if pagination or total counts are critical and not updated otherwise:
-      // executeFetch(false); // Silent refresh
     } catch (err) {
       console.error('Error deleting task:', err);
-      setTasks(originalTasks); // Revert optimistic update
+      setTasks(originalTasks);
       setError(parseApiError(err, 'Failed to delete task.'));
     }
   };
@@ -247,11 +254,10 @@ const TaskPage = () => {
 
     try {
       const response = await api.tasks.toggleTaskStatus(taskId);
-      // Sync with potentially more complete data from backend if needed
       setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === taskId ? response.task : t));
     } catch (err) {
       console.error('Error toggling task status:', err);
-      setTasks(originalTasks); // Revert
+      setTasks(originalTasks);
       setError(parseApiError(err, 'Failed to update task status.'));
     }
   };
@@ -271,7 +277,7 @@ const TaskPage = () => {
         (task._id || task.id) === taskId 
         ? { ...task, 
             status: newStatus,
-            completedAt: newStatus === TASK_STATUSES.COMPLETED ? new Date().toISOString() : (taskToUpdateOriginal.status === TASK_STATUSES.COMPLETED ? null : task.completedAt) // Handle completedAt
+            completedAt: newStatus === TASK_STATUSES.COMPLETED ? new Date().toISOString() : (taskToUpdateOriginal.status === TASK_STATUSES.COMPLETED ? null : task.completedAt)
           } 
         : task
       )
@@ -280,38 +286,30 @@ const TaskPage = () => {
 
     try {
       const response = await api.tasks.updateTask(taskId, { status: newStatus });
-      // Sync with backend response for full accuracy
       setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === taskId ? response.task : t));
     } catch (err) {
       console.error(`Error updating task ${taskId} to status ${newStatus}:`, err);
-      setTasks(originalTasks); // Revert optimistic update
+      setTasks(originalTasks);
       setError(parseApiError(err, `Failed to update status for task "${taskToUpdateOriginal.title || taskId}".`));
-      // Consider a silent executeFetch(false) here if Kanban gets out of sync badly on error
     }
   };
   
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    setPage(1); // Reset to page 1 on new search
-    executeFetch(true); // Trigger fetch, show main loading spinner
+    setPage(1);
+    // Search is now handled by local filtering
   };
 
   const handleClearFiltersAndSearch = () => {
     setFilter('all');
-    // Keep category, priority, dueDate from form for user convenience
-    // setCategory('');
-    // setPriority('');
-    // setDueDate('');
     setSearchQuery('');
     setSortBy('createdAt:desc');
     setPage(1);
-    // executeFetch will be triggered by useEffect due to queryParams change
   };
 
   const handlePageChange = (newPage) => {
     if (newPage >= 1 && newPage <= totalPages && newPage !== page && viewMode === 'list') {
       setPage(newPage);
-      // executeFetch will be triggered by useEffect
     }
   };
 
@@ -329,21 +327,18 @@ const TaskPage = () => {
   };
   
   const activeTaskCount = useMemo(() => {
-    return tasks.filter(task => ![TASK_STATUSES.COMPLETED, TASK_STATUSES.ARCHIVED].includes(task.status)).length;
-  }, [tasks]);
+    return filteredTasks.filter(task => ![TASK_STATUSES.COMPLETED, TASK_STATUSES.ARCHIVED].includes(task.status)).length;
+  }, [filteredTasks]);
   
   const completedTaskCount = useMemo(() => {
-    return tasks.filter(task => task.status === TASK_STATUSES.COMPLETED).length;
-  }, [tasks]);
+    return filteredTasks.filter(task => task.status === TASK_STATUSES.COMPLETED).length;
+  }, [filteredTasks]);
 
-  // Effect to reset page to 1 if viewMode changes to Kanban, or if filters change that affect total pages
   useEffect(() => {
     if (viewMode === 'kanban') {
-        setPage(1); // Kanban view loads all items, conceptually page 1
+        setPage(1);
     }
-    // If other specific filter changes necessitate page reset, handle here
   }, [viewMode, filter, searchQuery, category, priority, dueDate]);
-
 
   return (
     <>
@@ -362,10 +357,6 @@ const TaskPage = () => {
               <div className="user-info">
                 <span className="welcome-text">Welcome, {userProfile.name || 'User'}</span>
                 <div className="user-actions">
-                  {/* Use Link from react-router-dom if profile is an internal route */}
-                  <a href="/profile" className="profile-link" onClick={(e) => { e.preventDefault(); history.push('/profile');}}> 
-                    <i className="fa fa-user-circle"></i> My Profile
-                  </a>
                   <button className="logout-button" onClick={handleLogout} disabled={loggingOut || isSubmitting}>
                     <i className={`fa ${loggingOut ? 'fa-spinner fa-spin' : 'fa-sign-out'}`}></i> {loggingOut ? 'Logging out...' : 'Logout'}
                   </button>
@@ -437,7 +428,7 @@ const TaskPage = () => {
                 <input
                   id="taskDueDate" type="date" value={dueDate}
                   onChange={(e) => setDueDate(e.target.value)} className="form-input"
-                  min={new Date().toISOString().split("T")[0]} // Optional: prevent past dates
+                  min={new Date().toISOString().split("T")[0]}
                 />
               </div>
               <div className="button-row">
@@ -462,7 +453,7 @@ const TaskPage = () => {
               <button
                 className={`view-button ${viewMode === 'list' ? 'active' : ''}`}
                 onClick={() => setViewMode('list')}
-                disabled={isFetching || mainLoading} // Disable during any fetch/load
+                disabled={isFetching || mainLoading}
                 aria-pressed={viewMode === 'list'}
               >
                 <i className="fa fa-list"></i> List View
@@ -482,8 +473,11 @@ const TaskPage = () => {
                 <div className="search-input-wrapper">
                   <label htmlFor="searchQueryInput" className="visually-hidden">Search tasks</label>
                   <input
-                    id="searchQueryInput" type="search" placeholder="Search tasks..."
-                    value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                    id="searchQueryInput" 
+                    type="search" 
+                    placeholder="Search tasks by title, description, or category..."
+                    value={searchQuery} 
+                    onChange={(e) => setSearchQuery(e.target.value)}
                     className="form-input search-input"
                   />
                   <button type="submit" className="search-button" disabled={isFetching || mainLoading} aria-label="Submit search">
@@ -500,13 +494,12 @@ const TaskPage = () => {
                     className="form-select filter-select"
                     disabled={isFetching || mainLoading}
                   >
-                    <option value="all">All (Active & Open)</option>
+                    <option value="all">All Tasks</option>
                     <option value="active">Active Tasks</option>
                     <option value="completed">Completed Tasks</option>
-                    {/* Add more specific statuses if needed, e.g., 'backlog', 'under-review' */}
                   </select>
                 </div>
-               {viewMode === 'list' && ( // SortBy is more relevant for list view
+               {viewMode === 'list' && (
                 <div className="filter-group">
                     <label htmlFor="filterSort">Sort By:</label>
                     <select
@@ -546,20 +539,20 @@ const TaskPage = () => {
                 {viewMode === 'kanban' ? (
                   <div className="kanban-container">
                     <TaskKanban
-                      tasks={tasks} // Ensure tasks are correctly filtered for Kanban if needed, or Kanban handles all open tasks
+                      tasks={filteredTasks}
                       onEdit={handleEditTask}
                       onDelete={handleDeleteTask}
                       onStatusChange={handleStatusChange}
-                      // Pass column order explicitly if TaskKanban expects it
-                      // columnOrder={[TASK_STATUSES.BACKLOG, TASK_STATUSES.ACTIVE, TASK_STATUSES.UNDER_REVIEW, TASK_STATUSES.COMPLETED]}
-                      isLoading={isFetching} // Pass fetching state for individual column loaders perhaps
+                      onToggleComplete={handleToggleComplete}
+                      columnOrder={[TASK_STATUSES.ACTIVE, TASK_STATUSES.COMPLETED]}
+                      isLoading={isFetching}
                     />
                   </div>
-                ) : ( // List View
+                ) : (
                   <div className="list-container">
                     <div className="task-stats">
                       <span className="task-count total">
-                        <i className="fa fa-th-list"></i> {tasks.length} tasks displayed
+                        <i className="fa fa-th-list"></i> {filteredTasks.length} tasks displayed
                       </span>
                       <span className="task-count active">
                         <i className="fa fa-clock-o"></i> {activeTaskCount} active
@@ -568,7 +561,7 @@ const TaskPage = () => {
                         <i className="fa fa-check-square-o"></i> {completedTaskCount} completed
                       </span>
                     </div>
-                    {tasks.length === 0 ? (
+                    {filteredTasks.length === 0 ? (
                        <div className="empty-state">
                          <i className="fa fa-folder-open-o empty-icon fa-3x"></i>
                          <p>{searchQuery || filter !== 'all' ? 'No tasks match your current filters.' : 'No tasks yet. Add one above to get started!'}</p>
@@ -580,7 +573,7 @@ const TaskPage = () => {
                        </div>
                      ) : (
                         <ul className="task-list">
-                            {tasks.map(task => (
+                            {filteredTasks.map(task => (
                             <Task
                                 key={task._id || task.id}
                                 task={task}
@@ -621,8 +614,6 @@ const TaskPage = () => {
 
         <footer className="app-footer">
           <p>© {new Date().getFullYear()} TaskFlow App. All rights reserved.</p>
-          {/* Quick help could be a modal or a small expandable section */}
-          {/* <div className="quick-help-section"> ... </div> */}
         </footer>
       </div>
     </>
