@@ -565,6 +565,7 @@ class TaskAPI extends BaseAPI {
     }
   }
 
+
   async getTaskById(taskId) {
     if (!taskId) {
       throw new APIError('Task ID is required for getTaskById', 400, 'INVALID_TASK_ID');
@@ -716,6 +717,33 @@ class TaskAPI extends BaseAPI {
       throw error;
     }
   }
+  async getReminders() {
+    try {
+      // Reminders should not be cached as they are time-sensitive
+      return await this.client.get('/tasks/reminders');
+    } catch (error)      {
+      console.error(`TaskAPI Error in getReminders: ${error.message}`, error);
+      throw error;
+    }
+  }
+
+  // NEW: Method to mark a reminder as seen
+  async markReminderSeen(taskId) {
+    if (!taskId) {
+      throw new APIError('Task ID is required for markReminderSeen', 400, 'INVALID_TASK_ID');
+    }
+    try {
+      const result = await this.enqueueRequest(
+        () => this.client.patch(`/tasks/${taskId}/seen`)
+      );
+      // No need to invalidate cache here unless it affects a view
+      return result;
+    } catch (error) {
+      console.error(`TaskAPI Error in markReminderSeen (${taskId}): ${error.message}`, error);
+      throw error;
+    }
+  }
+}
 
   async bulkDeleteTasks(taskIds) {
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
