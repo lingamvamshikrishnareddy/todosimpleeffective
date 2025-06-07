@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useHistory } from 'react-router-dom';
-import Task from '../components/Task'; // Assuming path
-import TaskKanban from '../components/TaskKanban'; // Assuming path
+import Task from '../components/Task';
+import TaskKanban from '../components/TaskKanban';
 import { Helmet } from 'react-helmet';
-import api from '../services/api'; // Assuming path
-import './TaskPage.css'; // Assuming path
+import api from '../services/api';
+import './TaskPage.css';
 
-const DEBOUNCE_DELAY = 300;
+const DEBOUNCE_DELAY = 500; // Increased for better user experience
+const REMINDER_POLL_INTERVAL = 60000; // 1 minute
 const VALID_TASK_STATUSES_ARRAY = ['active', 'completed', 'archived'];
 const DEFAULT_ACTIVE_STATUS = 'active';
 
@@ -37,6 +38,9 @@ const TaskPage = () => {
   const [loggingOut, setLoggingOut] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [viewMode, setViewMode] = useState('kanban');
+  
+  // NEW: State for reminder notifications
+  const [notifications, setNotifications] = useState([]);
   
   const history = useHistory();
   const debounceTimeoutRef = useRef(null);
@@ -77,23 +81,16 @@ const TaskPage = () => {
   }, [history]);
 
   const getStatusQueryParam = useCallback(() => {
+    if (viewMode === 'kanban') return ''; // Kanban always fetches active & completed
     if (filter === 'completed') return 'completed';
     if (filter === 'active') return 'active';
-    return '';
-  }, [filter]);
+    return ''; // 'all'
+  }, [filter, viewMode]);
 
-  // Filter tasks based on search query
-  const filteredTasks = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    
-    const query = searchQuery.toLowerCase().trim();
-    return tasks.filter(task => 
-      task.title?.toLowerCase().includes(query) ||
-      task.description?.toLowerCase().includes(query) ||
-      task.category?.toLowerCase().includes(query)
-    );
-  }, [tasks, searchQuery]);
+  // Use tasks directly as API now handles filtering
+  const displayedTasks = tasks;
 
+  // Updated queryParams to include search query for API
   const queryParams = useMemo(() => ({
     page: viewMode === 'list' ? page : 1,
     limit: viewMode === 'kanban' ? 100 : 10,
@@ -102,7 +99,8 @@ const TaskPage = () => {
     sortBy,
     priority: priority || undefined,
     dueDate: dueDate || undefined,
-  }), [page, viewMode, getStatusQueryParam, category, sortBy, priority, dueDate]);
+    search: searchQuery.trim() || undefined, // Send search query to backend
+  }), [page, viewMode, getStatusQueryParam, category, sortBy, priority, dueDate, searchQuery]);
 
   const executeFetch = useCallback(async (showMainLoadingSpinner = true) => {
     if (fetchingGuardRef.current) return;
@@ -135,23 +133,54 @@ const TaskPage = () => {
     }
   }, [queryParams, history, viewMode, page]);
 
-  // Debounced search effect
+  // Updated debounced search effect to trigger API call
   useEffect(() => {
     if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
     debounceTimeoutRef.current = setTimeout(() => {
-      if (searchQuery.trim()) {
-        // For search, we work with local filtering instead of API call
-        return;
-      }
+      setPage(1); // Reset to first page on new search
       executeFetch(true);
     }, DEBOUNCE_DELAY);
     return () => { if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current); };
-  }, [executeFetch, searchQuery]);
+  }, [searchQuery, filter, sortBy, viewMode, category, priority, dueDate]);
 
-  // Initial fetch and filter changes
+  // Separate effect for pagination changes only
   useEffect(() => {
     executeFetch(true);
-  }, [filter, category, priority, dueDate, sortBy, page, viewMode]);
+  }, [page]);
+
+  // NEW: Effect for polling for reminders
+  useEffect(() => {
+    const checkReminders = async () => {
+      try {
+        const response = await api.tasks.getReminders();
+        if (response.reminders && response.reminders.length > 0) {
+          setNotifications(prev => {
+            const existingIds = new Set(prev.map(n => n._id));
+            const newReminders = response.reminders.filter(r => !existingIds.has(r._id));
+            return [...prev, ...newReminders];
+          });
+        }
+      } catch (err) {
+        console.error("Failed to fetch reminders:", err);
+      }
+    };
+
+    checkReminders(); // Initial check
+    const intervalId = setInterval(checkReminders, REMINDER_POLL_INTERVAL);
+
+    return () => clearInterval(intervalId);
+  }, []);
+
+  // NEW: Handler to dismiss a notification
+  const dismissNotification = async (taskId) => {
+    try {
+      await api.tasks.markReminderSeen(taskId);
+      setNotifications(prev => prev.filter(n => n._id !== taskId));
+    } catch (err) {
+      console.error("Failed to mark reminder as seen:", err);
+      setError(parseApiError(err, 'Could not dismiss reminder.'));
+    }
+  };
 
   const resetForm = useCallback(() => {
     setTaskTitle('');
@@ -226,40 +255,17 @@ const TaskPage = () => {
     setTaskDescription(task.description || '');
     setCategory(task.category || '');
     setPriority(task.priority || '');
-    setDueDate(task.dueDate ? new Date(task.dueDate).toISOString().split('T')[0] : '');
+    // Updated to handle datetime-local format
+    setDueDate(task.dueDate ? new Date(task.dueDate).toISOString().slice(0, 16) : '');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Updated to use handleStatusChange for unified logic
   const handleToggleComplete = async (taskId) => {
-    if (!taskId) return;
-    
-    const originalTasks = [...tasks];
-    let updatedTaskData = null;
-
-    setTasks(prevTasks =>
-      prevTasks.map(task => {
-        if ((task._id || task.id) === taskId) {
-          const newStatus = task.status === TASK_STATUSES.COMPLETED ? DEFAULT_ACTIVE_STATUS : TASK_STATUSES.COMPLETED;
-          updatedTaskData = { 
-            ...task, 
-            status: newStatus,
-            completedAt: newStatus === TASK_STATUSES.COMPLETED ? new Date().toISOString() : null 
-          };
-          return updatedTaskData;
-        }
-        return task;
-      })
-    );
-    setError(null);
-
-    try {
-      const response = await api.tasks.toggleTaskStatus(taskId);
-      setTasks(prevTasks => prevTasks.map(t => (t._id || t.id) === taskId ? response.task : t));
-    } catch (err) {
-      console.error('Error toggling task status:', err);
-      setTasks(originalTasks);
-      setError(parseApiError(err, 'Failed to update task status.'));
-    }
+    const task = tasks.find(t => (t._id || t.id) === taskId);
+    if (!task) return;
+    const newStatus = task.status === TASK_STATUSES.COMPLETED ? DEFAULT_ACTIVE_STATUS : TASK_STATUSES.COMPLETED;
+    await handleStatusChange(taskId, newStatus);
   };
 
   const handleStatusChange = async (taskId, newStatus) => {
@@ -269,17 +275,9 @@ const TaskPage = () => {
     }
 
     const originalTasks = [...tasks];
-    const taskToUpdateOriginal = originalTasks.find(t => (t._id || t.id) === taskId);
-    if (!taskToUpdateOriginal) return;
-
     setTasks(prevTasks =>
       prevTasks.map(task =>
-        (task._id || task.id) === taskId 
-        ? { ...task, 
-            status: newStatus,
-            completedAt: newStatus === TASK_STATUSES.COMPLETED ? new Date().toISOString() : (taskToUpdateOriginal.status === TASK_STATUSES.COMPLETED ? null : task.completedAt)
-          } 
-        : task
+        (task._id || task.id) === taskId ? { ...task, status: newStatus } : task
       )
     );
     setError(null);
@@ -290,20 +288,24 @@ const TaskPage = () => {
     } catch (err) {
       console.error(`Error updating task ${taskId} to status ${newStatus}:`, err);
       setTasks(originalTasks);
-      setError(parseApiError(err, `Failed to update status for task "${taskToUpdateOriginal.title || taskId}".`));
+      const taskToUpdate = originalTasks.find(t => (t._id || t.id) === taskId);
+      setError(parseApiError(err, `Failed to update status for task "${taskToUpdate?.title || taskId}".`));
     }
   };
   
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     setPage(1);
-    // Search is now handled by local filtering
+    executeFetch(true);
   };
 
   const handleClearFiltersAndSearch = () => {
     setFilter('all');
     setSearchQuery('');
     setSortBy('createdAt:desc');
+    setCategory('');
+    setPriority('');
+    setDueDate('');
     setPage(1);
   };
 
@@ -327,18 +329,18 @@ const TaskPage = () => {
   };
   
   const activeTaskCount = useMemo(() => {
-    return filteredTasks.filter(task => ![TASK_STATUSES.COMPLETED, TASK_STATUSES.ARCHIVED].includes(task.status)).length;
-  }, [filteredTasks]);
+    return displayedTasks.filter(task => task.status === 'active').length;
+  }, [displayedTasks]);
   
   const completedTaskCount = useMemo(() => {
-    return filteredTasks.filter(task => task.status === TASK_STATUSES.COMPLETED).length;
-  }, [filteredTasks]);
+    return displayedTasks.filter(task => task.status === 'completed').length;
+  }, [displayedTasks]);
 
   useEffect(() => {
     if (viewMode === 'kanban') {
         setPage(1);
     }
-  }, [viewMode, filter, searchQuery, category, priority, dueDate]);
+  }, [viewMode]);
 
   return (
     <>
@@ -376,6 +378,21 @@ const TaskPage = () => {
                 {error.details && <small className="error-details">{error.details}</small>}
               </div>
               <button onClick={() => setError(null)} aria-label="Dismiss error message">×</button>
+            </div>
+          )}
+
+          {/* NEW: Notification Area */}
+          {notifications.length > 0 && (
+            <div className="notifications-container">
+              {notifications.map(notif => (
+                <div key={notif._id} className="notification-message">
+                  <div>
+                    <p><i className="fa fa-bell"></i> <strong>Reminder:</strong> Task "{notif.title}" is due soon!</p>
+                    <small>Due: {new Date(notif.dueDate).toLocaleString()}</small>
+                  </div>
+                  <button onClick={() => dismissNotification(notif._id)} aria-label="Dismiss reminder">×</button>
+                </div>
+              ))}
             </div>
           )}
 
@@ -424,11 +441,14 @@ const TaskPage = () => {
                 </div>
               </div>
               <div className="form-group">
-                <label htmlFor="taskDueDate"><i className="fa fa-calendar" aria-hidden="true"></i> Due Date:</label>
+                <label htmlFor="taskDueDate"><i className="fa fa-calendar" aria-hidden="true"></i> Due Date & Time:</label>
                 <input
-                  id="taskDueDate" type="date" value={dueDate}
-                  onChange={(e) => setDueDate(e.target.value)} className="form-input"
-                  min={new Date().toISOString().split("T")[0]}
+                  id="taskDueDate"
+                  type="datetime-local"
+                  value={dueDate ? new Date(dueDate).toISOString().slice(0, 16) : ''}
+                  onChange={(e) => setDueDate(e.target.value ? new Date(e.target.value).toISOString() : '')}
+                  className="form-input"
+                  min={new Date().toISOString().slice(0, 16)}
                 />
               </div>
               <div className="button-row">
@@ -539,7 +559,7 @@ const TaskPage = () => {
                 {viewMode === 'kanban' ? (
                   <div className="kanban-container">
                     <TaskKanban
-                      tasks={filteredTasks}
+                      tasks={displayedTasks}
                       onEdit={handleEditTask}
                       onDelete={handleDeleteTask}
                       onStatusChange={handleStatusChange}
@@ -552,7 +572,7 @@ const TaskPage = () => {
                   <div className="list-container">
                     <div className="task-stats">
                       <span className="task-count total">
-                        <i className="fa fa-th-list"></i> {filteredTasks.length} tasks displayed
+                        <i className="fa fa-th-list"></i> {displayedTasks.length} tasks displayed
                       </span>
                       <span className="task-count active">
                         <i className="fa fa-clock-o"></i> {activeTaskCount} active
@@ -561,7 +581,7 @@ const TaskPage = () => {
                         <i className="fa fa-check-square-o"></i> {completedTaskCount} completed
                       </span>
                     </div>
-                    {filteredTasks.length === 0 ? (
+                    {displayedTasks.length === 0 ? (
                        <div className="empty-state">
                          <i className="fa fa-folder-open-o empty-icon fa-3x"></i>
                          <p>{searchQuery || filter !== 'all' ? 'No tasks match your current filters.' : 'No tasks yet. Add one above to get started!'}</p>
@@ -573,7 +593,7 @@ const TaskPage = () => {
                        </div>
                      ) : (
                         <ul className="task-list">
-                            {filteredTasks.map(task => (
+                            {displayedTasks.map(task => (
                             <Task
                                 key={task._id || task.id}
                                 task={task}
