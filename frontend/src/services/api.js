@@ -717,6 +717,7 @@ class TaskAPI extends BaseAPI {
       throw error;
     }
   }
+
   async getReminders() {
     try {
       // Reminders should not be cached as they are time-sensitive
@@ -743,8 +744,8 @@ class TaskAPI extends BaseAPI {
       throw error;
     }
   }
-}
 
+  // CORRECTED: This method is now inside the class
   async bulkDeleteTasks(taskIds) {
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
       throw new APIError('Task IDs array is required for bulkDeleteTasks', 400, 'INVALID_TASK_IDS');
