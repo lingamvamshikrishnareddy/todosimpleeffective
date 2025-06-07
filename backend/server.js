@@ -2,10 +2,10 @@ const express = require('express');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const taskRoutes = require('./routes/taskRoutes');
-const userRoutes = require('./routes/userRoutes'); // Assuming this includes /api/auth and /api/user routes
+const userRoutes = require('./routes/userRoutes');
 const { errorHandler } = require('./middleware/errorMiddleware');
-const cors = require('cors'); // Already imported
-const cookieParser = require('cookie-parser'); // Import cookie-parser
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const path = require('path');
 
 // Load environment variables from .env file
@@ -19,70 +19,82 @@ const app = express();
 // --- CORS Configuration ---
 // Define allowed origins for CORS requests
 const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:3000', // Your React app's URL
-  // Add other allowed origins here (e.g., production frontend URL)
-  // 'https://your-production-domain.com'
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  'https://todosimpleeffective.vercel.app',
+  'https://todosimpleeffective-axj2d72g9.vercel.app', // Add your actual frontend URL
+  // Add pattern to catch all your Vercel preview deployments
+  /^https:\/\/todosimpleeffective-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/,
 ];
 
 // Configure CORS options
 const corsOptions = {
   origin: function (origin, callback) {
+    console.log(`CORS check for origin: ${origin}`); // Debug log
+    
     // Allow requests with no origin (like mobile apps, curl, postman)
-    // or requests from whitelisted origins
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    
+    // Check string origins
+    if (allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') {
+        return allowed === origin;
+      } else if (allowed instanceof RegExp) {
+        return allowed.test(origin);
+      }
+      return false;
+    })) {
       callback(null, true);
     } else {
-      console.warn(`CORS blocked for origin: ${origin}`); // Log blocked origins
+      console.warn(`CORS blocked for origin: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true, // Important: Allow cookies and authorization headers
-  optionsSuccessStatus: 200 // For legacy browser compatibility (optional)
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 };
 
 // --- Global Middleware ---
-// **IMPORTANT**: Apply CORS middleware *before* other middleware/routes
+// Apply CORS middleware before other middleware/routes
 app.use(cors(corsOptions));
 
-// Enable pre-flight requests across the board (optional, often handled by cors middleware itself)
-// app.options('*', cors(corsOptions)); // Uncomment if you face pre-flight issues
+// Handle preflight requests explicitly
+app.options('*', cors(corsOptions));
 
-// Middleware to parse cookies (Needed for httpOnly cookies like refresh tokens)
+// Middleware to parse cookies
 app.use(cookieParser());
 
 // Middleware to parse JSON request bodies
 app.use(express.json());
 
-// Middleware to parse URL-encoded request bodies (optional, if you use form submissions)
-// app.use(express.urlencoded({ extended: true }));
-
+// Debug middleware to log all requests
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path} - Origin: ${req.get('Origin') || 'No Origin'}`);
+  next();
+});
 
 // --- API Routes ---
-// Mount your API routes
 app.use('/api/tasks', taskRoutes);
-app.use('/api', userRoutes); // Handles '/api/auth/...' and '/api/user/...'
-
+app.use('/api', userRoutes);
 
 // --- Static File Serving (Production) ---
-// Serve static assets (React build) if in production environment
 if (process.env.NODE_ENV === 'production') {
-  // Set the static folder where the React build output resides
   app.use(express.static(path.join(__dirname, 'client/build')));
-
-  // For any request that doesn't match an API route or a static file,
-  // serve the main index.html file (for client-side routing)
+  
   app.get('*', (req, res) => {
     res.sendFile(path.resolve(__dirname, 'client', 'build', 'index.html'));
   });
 } else {
-  // Basic root route for development environment to confirm API is running
   app.get('/', (req, res) => {
     res.send('API is running in development mode...');
   });
 }
 
 // --- Custom Error Handling Middleware ---
-// **IMPORTANT**: This must be the *last* middleware added
 app.use(errorHandler);
 
 // --- Start Server ---
@@ -90,5 +102,6 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
-  console.log(`Allowing CORS requests from: ${allowedOrigins.join(', ')}`);
+  console.log(`Allowing CORS requests from: ${allowedOrigins.filter(o => typeof o === 'string').join(', ')}`);
+  console.log(`FRONTEND_URL from env: ${process.env.FRONTEND_URL}`);
 });
