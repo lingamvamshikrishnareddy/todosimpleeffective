@@ -232,10 +232,15 @@ const updateTask = async (req, res) => {
         updates.dueDate = null;
         updates.$unset = updates.$unset || {};
         updates.$unset.dueDate = 1;
+        // Reset reminder when due date is cleared
+        updates.$unset.reminderSentAt = 1;
       } else {
         const parsedDueDate = new Date(dueDate);
         if (!isNaN(parsedDueDate.getTime())) {
           updates.dueDate = parsedDueDate;
+          // Reset reminder when due date is changed
+          updates.$unset = updates.$unset || {};
+          updates.$unset.reminderSentAt = 1;
         } else {
           return sendError(res, 400, 'Invalid due date format.');
         }
@@ -450,13 +455,11 @@ const bulkUpdateTasks = async (req, res) => {
       updatesToApply.$unset = { completedAt: 1 };
     }
 
-
     const operation = { $set: updatesToApply };
     if (updatesToApply.$unset) {
         operation.$unset = updatesToApply.$unset;
         delete updatesToApply.$unset; // remove from $set
     }
-
 
     const result = await TaskModel.updateMany(
       { _id: { $in: taskIds }, user: req.user.id },
@@ -516,6 +519,253 @@ const bulkDeleteTasks = async (req, res) => {
   }
 };
 
+/**
+ * Get tasks that are due soon and need reminders
+ * @route GET /api/tasks/reminders
+ * @access Private
+ * @query {number} hours - Hours ahead to check for due tasks (default: 24)
+ * @query {boolean} includeOverdue - Include overdue tasks (default: true)
+ */
+const getReminders = async (req, res) => {
+  try {
+    const hoursAhead = parseInt(req.query.hours) || 24; // Default to 24 hours
+    const includeOverdue = req.query.includeOverdue !== 'false'; // Default to true
+    const now = new Date();
+    const futureTime = new Date(now.getTime() + (hoursAhead * 60 * 60 * 1000));
+
+    // Build the query for due date
+    let dueDateQuery;
+    if (includeOverdue) {
+      // Include both overdue tasks and tasks due within the specified time
+      dueDateQuery = { $lte: futureTime };
+    } else {
+      // Only include tasks due within the specified time (not overdue)
+      dueDateQuery = { $gte: now, $lte: futureTime };
+    }
+
+    const reminders = await TaskModel.find({
+      user: req.user.id,
+      status: { $nin: ['completed', 'archived'] }, // Only active tasks
+      dueDate: { 
+        $exists: true, 
+        $ne: null,
+        ...dueDateQuery
+      },
+      $or: [
+        { reminderSentAt: { $exists: false } }, // Field doesn't exist
+        { reminderSentAt: null }, // Field is null
+        // Include tasks where reminder was sent more than 1 hour ago (for recurring reminders)
+        { reminderSentAt: { $lt: new Date(now.getTime() - (60 * 60 * 1000)) } }
+      ]
+    })
+    .sort({ dueDate: 1 }) // Sort by due date (earliest first)
+    .lean();
+
+    // Add additional metadata for each reminder
+    const enrichedReminders = reminders.map(task => {
+      const timeUntilDue = task.dueDate.getTime() - now.getTime();
+      const hoursUntilDue = Math.floor(timeUntilDue / (1000 * 60 * 60));
+      const isOverdue = timeUntilDue < 0;
+      
+      return {
+        ...task,
+        isOverdue,
+        hoursUntilDue: Math.abs(hoursUntilDue),
+        urgencyLevel: isOverdue ? 'overdue' : 
+                     hoursUntilDue <= 2 ? 'urgent' : 
+                     hoursUntilDue <= 6 ? 'high' : 'normal'
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      reminders: enrichedReminders,
+      count: enrichedReminders.length,
+      overdueCount: enrichedReminders.filter(r => r.isOverdue).length
+    });
+  } catch (error) {
+    console.error('Error fetching reminders:', error);
+    sendError(res, 500, 'Failed to fetch reminders', error);
+  }
+};
+
+/**
+ * Mark a task reminder as seen/acknowledged
+ * @route PATCH /api/tasks/:id/seen
+ * @access Private
+ */
+const markReminderSeen = async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const now = new Date();
+
+    const updatedTask = await TaskModel.findOneAndUpdate(
+      { _id: taskId, user: req.user.id },
+      { 
+        $set: { 
+          reminderSentAt: now,
+          updatedAt: now
+        } 
+      },
+      { new: true, runValidators: true, lean: true }
+    );
+
+    if (!updatedTask) {
+      return sendError(res, 404, 'Task not found or not authorized.');
+    }
+    
+    res.json({ 
+      success: true, 
+      task: updatedTask,
+      message: 'Reminder marked as seen'
+    });
+  } catch (error) {
+    console.error('Error marking reminder as seen:', error);
+    if (error.kind === 'ObjectId') {
+      return sendError(res, 404, 'Task not found (invalid ID format).');
+    }
+    sendError(res, 500, 'Failed to mark reminder as seen', error);
+  }
+};
+
+/**
+ * Bulk mark multiple task reminders as seen
+ * @route PATCH /api/tasks/reminders/bulk-seen
+ * @access Private
+ */
+const bulkMarkRemindersSeen = async (req, res) => {
+  try {
+    const { taskIds } = req.body;
+
+    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+      return sendError(res, 400, 'Task IDs array is required and must not be empty.');
+    }
+
+    const now = new Date();
+    const result = await TaskModel.updateMany(
+      { 
+        _id: { $in: taskIds }, 
+        user: req.user.id 
+      },
+      { 
+        $set: { 
+          reminderSentAt: now,
+          updatedAt: now
+        } 
+      },
+      { runValidators: true }
+    );
+
+    if (result.matchedCount === 0) {
+      return sendError(res, 404, 'No matching tasks found or not authorized.');
+    }
+
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} reminders marked as seen.`,
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error('Error bulk marking reminders as seen:', error);
+    sendError(res, 500, 'Failed to bulk mark reminders as seen', error);
+  }
+};
+
+/**
+ * Get overdue tasks specifically
+ * @route GET /api/tasks/overdue
+ * @access Private
+ */
+const getOverdueTasks = async (req, res) => {
+  try {
+    const now = new Date();
+    
+    const overdueTasks = await TaskModel.find({
+      user: req.user.id,
+      status: { $nin: ['completed', 'archived'] },
+      dueDate: { 
+        $exists: true, 
+        $ne: null,
+        $lt: now // Due date is in the past
+      }
+    })
+    .sort({ dueDate: 1 }) // Sort by due date (oldest overdue first)
+    .lean();
+
+    // Add metadata about how overdue each task is
+    const enrichedOverdueTasks = overdueTasks.map(task => {
+      const overdueTime = now.getTime() - task.dueDate.getTime();
+      const daysPastDue = Math.floor(overdueTime / (1000 * 60 * 60 * 24));
+      const hoursPastDue = Math.floor(overdueTime / (1000 * 60 * 60));
+      
+      return {
+        ...task,
+        daysPastDue,
+        hoursPastDue,
+        overdueSeverity: hoursPastDue <= 24 ? 'recent' : 
+                        daysPastDue <= 7 ? 'moderate' : 'severe'
+      };
+    });
+
+    res.json({
+      success: true,
+      overdueTasks: enrichedOverdueTasks,
+      count: enrichedOverdueTasks.length
+    });
+  } catch (error) {
+    console.error('Error fetching overdue tasks:', error);
+    sendError(res, 500, 'Failed to fetch overdue tasks', error);
+  }
+};
+
+/**
+ * Snooze a task reminder (postpone reminder for specified time)
+ * @route PATCH /api/tasks/:id/snooze
+ * @access Private
+ */
+const snoozeReminder = async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const { hours = 1 } = req.body; // Default snooze for 1 hour
+
+    if (hours <= 0 || hours > 168) { // Max 1 week (168 hours)
+      return sendError(res, 400, 'Snooze duration must be between 1 and 168 hours.');
+    }
+
+    const now = new Date();
+    const snoozeUntil = new Date(now.getTime() + (hours * 60 * 60 * 1000));
+
+    const updatedTask = await TaskModel.findOneAndUpdate(
+      { _id: taskId, user: req.user.id },
+      { 
+        $set: { 
+          reminderSentAt: snoozeUntil, // Set reminder to future time
+          updatedAt: now
+        } 
+      },
+      { new: true, runValidators: true, lean: true }
+    );
+
+    if (!updatedTask) {
+      return sendError(res, 404, 'Task not found or not authorized.');
+    }
+    
+    res.json({ 
+      success: true, 
+      task: updatedTask,
+      message: `Reminder snoozed for ${hours} hour(s)`,
+      snoozeUntil
+    });
+  } catch (error) {
+    console.error('Error snoozing reminder:', error);
+    if (error.kind === 'ObjectId') {
+      return sendError(res, 404, 'Task not found (invalid ID format).');
+    }
+    sendError(res, 500, 'Failed to snooze reminder', error);
+  }
+};
+
 module.exports = {
   getTasks,
   createTask,
@@ -527,4 +777,6 @@ module.exports = {
   getTaskStats,
   bulkUpdateTasks,
   bulkDeleteTasks,
+  getReminders,
+  markReminderSeen,
 };
