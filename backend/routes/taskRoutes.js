@@ -11,25 +11,28 @@ const {
   bulkUpdateTasks,
   bulkDeleteTasks,
   getTaskStats,
-  searchTasks // Assuming you have this exported from controller
+  getReminders,       // NEW
+  markReminderSeen,   // NEW
 } = require('../controllers/taskController');
 const auth = require('../middleware/authMiddleware');
 
-router.use(auth); // Apply auth middleware to all task routes
+router.use(auth);
 
 router.get('/', getTasks);
 router.post('/', createTask);
 
 router.get('/stats', getTaskStats);
-router.get('/search', searchTasks); // Add route for dedicated search if used by TaskAPI
+// NEW: Route for fetching reminders
+router.get('/reminders', getReminders);
 
-// Corrected bulk operation routes
-router.put('/bulk-update', bulkUpdateTasks); // Changed from PATCH /bulk
-router.delete('/bulk-delete', bulkDeleteTasks); // Changed from DELETE /bulk
+router.put('/bulk-update', bulkUpdateTasks);
+router.delete('/bulk-delete', bulkDeleteTasks);
 
 router.get('/:id', getTaskById);
 router.put('/:id', updateTask);
 router.delete('/:id', deleteTask);
 router.patch('/:id/toggle', toggleTaskStatus);
+// NEW: Route for marking a reminder as seen
+router.patch('/:id/seen', markReminderSeen);
 
 module.exports = router;
